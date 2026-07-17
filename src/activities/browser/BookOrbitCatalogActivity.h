@@ -26,14 +26,25 @@ class BookOrbitCatalogActivity final : public Activity {
     CHECK_WIFI,
     WIFI_SELECTION,
     LOADING,
-    SECTIONS,     // top-level: Continue Reading / All Books
-    LIST,         // a list of books (continue-reading or all-books page)
-    DETAIL,       // one book: download / mark finished
+    SECTIONS,     // top-level browse menu (Continue Reading / sorts / filters / search)
+    LIST,         // a list of books (from a chosen browse mode)
+    DETAIL,       // one book: download / open / mark finished / next-in-series
     DOWNLOADING,
     ERROR,
   };
 
-  enum class Section { CONTINUE_READING, ALL_BOOKS };
+  // Browse modes shown on the landing menu. Each maps to a specific query
+  // (or the cached Continue Reading list, or the search text-input flow).
+  enum class BrowseMode {
+    CONTINUE_READING,   // cached dashboard list
+    ALL_TITLE,          // sort=title
+    ALL_RECENT,         // sort=recently_added
+    CURRENTLY_READING,  // readStatus=reading
+    UNREAD,             // readStatus=unread
+    FINISHED,           // readStatus=finished
+    SEARCH,             // prompt for text, then q=
+  };
+  static constexpr int BROWSE_MODE_COUNT = 7;
 
   explicit BookOrbitCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("BookOrbitCatalog", renderer, mappedInput), buttonNavigator() {}
@@ -59,8 +70,10 @@ class BookOrbitCatalogActivity final : public Activity {
   bool dashboardLoaded = false;
   std::vector<BookOrbitCatalogItem> continueReadingCache;
 
-  // Current section + list data.
-  Section section = Section::CONTINUE_READING;
+  // Current browse mode + list data.
+  BrowseMode browseMode = BrowseMode::CONTINUE_READING;
+  BookOrbitBooksQuery listQuery;   // the query backing the current LIST (for paging)
+  std::string searchTerm;          // last search text
   std::vector<BookOrbitCatalogItem> items;
   int listPage = 1;
   bool listHasNext = false;
@@ -68,7 +81,8 @@ class BookOrbitCatalogActivity final : public Activity {
 
   // Detail view.
   BookOrbitCatalogDetail detail;
-  std::string downloadedPath;   // set once a download completes
+  std::string downloadedPath;   // set once a download completes (this session)
+  bool alreadyOnDevice = false; // file exists on SD from a prior download
   size_t downloadProgress = 0;
   size_t downloadTotal = 0;
   bool cancelRequested = false;
@@ -78,15 +92,20 @@ class BookOrbitCatalogActivity final : public Activity {
   void onWifiSelectionComplete(bool connected);
 
   void enterSections();
+  void selectBrowseMode(BrowseMode mode);
   void loadContinueReading();
-  void loadAllBooks(int page);
+  void loadQuery(const BookOrbitBooksQuery& query, int page);
+  void launchSearch();
   void openBookDetail(int bookId);
   void downloadCurrentBook();
+  void downloadNextInSeries();
   void markCurrentBookFinished();
+  void refreshDownloadedFlag();
 
   void showError(const std::string& msg);
   bool preventAutoSleep() override;
 
   // Build the on-SD destination path for a detail's primary file.
   std::string destPathForDetail() const;
+  static std::string destPathFor(const std::string& title, const std::string& author);
 };

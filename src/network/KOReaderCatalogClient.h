@@ -56,12 +56,26 @@ struct BookOrbitCatalogDetail {
   std::string author;
   std::string seriesName;
   int seriesIndex = -1;
+  int seriesId = 0;              // >0 if part of a series (enables next-in-series)
   std::string readStatus;
   float progressPercentage = -1.0f;
   int primaryFileId = 0;         // EPUB (role=primary) file id, 0 if none
   std::string primaryFormat;
   long primarySizeBytes = 0;
   std::string description;       // truncated
+  bool hasCover = false;
+  // "Next in series" resolved from relatedSections (0 if none / already have all).
+  int nextInSeriesId = 0;
+  std::string nextInSeriesTitle;
+};
+
+// Query parameters for a book-list fetch. All optional; empty/zero = omit.
+struct BookOrbitBooksQuery {
+  std::string sort;         // "title" | "recently_added" | "author" | "series"
+  std::string search;       // ?q= substring
+  std::string readStatus;   // ?readStatus= reading|finished|unread|abandoned
+  int seriesId = 0;         // ?seriesId= (books within a series)
+  int page = 1;
 };
 
 class KOReaderCatalogClient {
@@ -84,6 +98,10 @@ class KOReaderCatalogClient {
   // Paginated all-books list. sort is a catalog sort key (e.g. "title",
   // "recently_added"); page is 1-based.
   static Error fetchBooks(const std::string& sort, int page, BookOrbitCatalogPage& out);
+
+  // Paginated book list with full query support (sort + search + read-status
+  // filter + series filter). Empty/zero query fields are omitted from the URL.
+  static Error fetchBooks(const BookOrbitBooksQuery& query, BookOrbitCatalogPage& out);
 
   // Full detail for one book (needed to resolve the primary EPUB file id/size).
   static Error fetchDetail(int bookId, BookOrbitCatalogDetail& out);

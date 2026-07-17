@@ -69,6 +69,25 @@ std::string joinFirstAuthor(JsonArrayConst authors) {
   return std::string(authors[0].as<const char*>() ? authors[0].as<const char*>() : "");
 }
 
+// Minimal percent-encoder for query values (search terms). Encodes everything
+// except RFC 3986 unreserved chars so spaces/punctuation are safe in the URL.
+std::string urlEncode(const std::string& s) {
+  static const char* hex = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(s.size() * 3);
+  for (unsigned char c : s) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+        c == '.' || c == '~') {
+      out += static_cast<char>(c);
+    } else {
+      out += '%';
+      out += hex[c >> 4];
+      out += hex[c & 0x0F];
+    }
+  }
+  return out;
+}
+
 float progressOrUnknown(JsonVariantConst v) {
   if (v.isNull()) return -1.0f;
   return v.as<float>();
@@ -216,14 +235,27 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::fetchContinueReading(std::ve
 
 KOReaderCatalogClient::Error KOReaderCatalogClient::fetchBooks(const std::string& sort, int page,
                                                                BookOrbitCatalogPage& out) {
+  BookOrbitBooksQuery q;
+  q.sort = sort;
+  q.page = page;
+  return fetchBooks(q, out);
+}
+
+KOReaderCatalogClient::Error KOReaderCatalogClient::fetchBooks(const BookOrbitBooksQuery& query,
+                                                               BookOrbitCatalogPage& out) {
   out.items.clear();
-  out.page = page;
+  out.page = query.page;
   out.total = 0;
   out.hasNext = false;
 
   // size=10 keeps the JSON small enough to parse on the C3's tight heap
   // (a full page of 20 is ~8.6 KB; ArduinoJson needs ~2-3x that to parse).
-  std::string url = catalogBase() + "/books?sort=" + sort + "&page=" + std::to_string(page) + "&size=10";
+  std::string url = catalogBase() + "/books?size=10&page=" + std::to_string(query.page);
+  if (!query.sort.empty()) url += "&sort=" + query.sort;
+  if (!query.search.empty()) url += "&q=" + urlEncode(query.search);
+  if (!query.readStatus.empty()) url += "&readStatus=" + query.readStatus;
+  if (query.seriesId > 0) url += "&seriesId=" + std::to_string(query.seriesId);
+
   std::string body;
   const Error e = httpGetJson(url, body);
   if (e != OK) return e;
@@ -233,7 +265,7 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::fetchBooks(const std::string
   if (jerr) return PARSE_ERROR;
 
   out.total = doc["total"] | 0;
-  out.page = doc["page"] | page;
+  out.page = doc["page"] | query.page;
   out.hasNext = doc["hasNext"] | false;
   JsonArrayConst items = doc["items"].as<JsonArrayConst>();
   if (!items.isNull()) {
@@ -262,6 +294,8 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::fetchDetail(int bookId, Book
   out.author = joinFirstAuthor(doc["authors"]);
   out.seriesName = doc["seriesName"].as<const char*>() ? doc["seriesName"].as<const char*>() : "";
   out.seriesIndex = doc["seriesIndex"] | -1;
+  out.seriesId = doc["seriesId"] | 0;
+  out.hasCover = doc["hasCover"] | false;
   out.readStatus = doc["readStatus"].as<const char*>() ? doc["readStatus"].as<const char*>() : "";
   out.progressPercentage = progressOrUnknown(doc["progressPercentage"]);
   const char* desc = doc["description"].as<const char*>();
@@ -300,6 +334,30 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::fetchDetail(int bookId, Book
       out.primaryFileId = firstEpubId;
       out.primaryFormat = firstEpubFmt;
       out.primarySizeBytes = firstEpubSize;
+    }
+  }
+
+  // Resolve "next in series" from relatedSections (the server pre-computes a
+  // "series" section listing sibling books with their seriesIndex). Pick the
+  // sibling with the smallest index strictly greater than this book's index —
+  // that's the natural "read next". Skip if we can't determine an ordering.
+  JsonArrayConst related = doc["relatedSections"].as<JsonArrayConst>();
+  if (!related.isNull() && out.seriesIndex >= 0) {
+    int bestIdx = 2147483647;  // INT_MAX without pulling <climits>
+    for (JsonObjectConst sec : related) {
+      const char* sid = sec["id"].as<const char*>();
+      if (!sid || std::string(sid) != "series") continue;
+      JsonArrayConst sbooks = sec["books"].as<JsonArrayConst>();
+      if (sbooks.isNull()) continue;
+      for (JsonObjectConst sb : sbooks) {
+        const int idx = sb["seriesIndex"] | -1;
+        const int sbId = sb["id"] | 0;
+        if (idx > out.seriesIndex && idx < bestIdx && sbId > 0) {
+          bestIdx = idx;
+          out.nextInSeriesId = sbId;
+          out.nextInSeriesTitle = sb["title"].as<const char*>() ? sb["title"].as<const char*>() : "";
+        }
+      }
     }
   }
   return OK;
