@@ -69,7 +69,10 @@ struct HomeMenuEntry {
 };
 
 struct HomeMenuEntries {
-  static constexpr int kCapacity = 8;
+  // Max items: ContinueReading + BrowseFiles + Recent + OPDS + BookOrbitLibrary +
+  // ReadingStats + Bookmarks + FileTransfer + Settings = 9. Keep headroom so a
+  // new conditional entry never silently drops Settings off the end again.
+  static constexpr int kCapacity = 10;
   std::array<HomeMenuEntry, kCapacity> entries{};
   int count = 0;
 
