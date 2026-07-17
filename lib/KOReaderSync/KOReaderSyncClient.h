@@ -1,5 +1,8 @@
 #pragma once
 #include <string>
+#include <vector>
+
+#include "KOReaderPageStatsStore.h"
 
 /**
  * Progress data from KOReader sync server.
@@ -19,9 +22,11 @@ struct KOReaderProgress {
  * Base URL: https://sync.koreader.rocks:443/
  *
  * API Endpoints:
- *   GET /users/auth - Authenticate (validate credentials)
- *   GET /syncs/progress/:document - Get progress for a document
- *   PUT /syncs/progress - Update progress for a document
+ *   GET  /users/auth              - Authenticate (validate credentials)
+ *   GET  /syncs/progress/:document - Get progress for a document
+ *   PUT  /syncs/progress          - Update progress for a document
+ *   POST /plugin/page-stats       - Upload timed page-turn events (BookOrbit only;
+ *                                    powers reading streak/time/pace/DNA stats)
  *
  * Authentication:
  *   x-auth-user: username
@@ -61,6 +66,28 @@ class KOReaderSyncClient {
    * @return OK on success, error code on failure
    */
   static Error updateProgress(const KOReaderProgress& progress);
+
+  /**
+   * Upload buffered page-turn events to a BookOrbit server's KOReader plugin
+   * page-stats endpoint (POST <base>/plugin/page-stats). The server clusters
+   * these raw events into timed reading sessions, which is what feeds the
+   * reading-streak / reading-time / pace / reading-DNA stats. Plain KOSync
+   * progress does NOT create sessions, so without this a device only moves the
+   * progress bar.
+   *
+   * Only supported by BookOrbit-style servers; the public sync.koreader.rocks
+   * has no such endpoint and returns 404 (mapped to NOT_FOUND so the caller can
+   * disable stat upload gracefully).
+   *
+   * @param deviceModel  Human-readable device model (e.g. "Xteink X3")
+   * @param store        Buffer of pending events (must have a 32-char hash)
+   * @param deviceTime   Optional device-local wall clock "YYYY-MM-DD HH:MM:SS"
+   *                     (empty to omit). KOReader datetimes carry no timezone.
+   * @return OK on success (2xx), NOT_FOUND if the endpoint is unsupported,
+   *         error code otherwise
+   */
+  static Error uploadPageStats(const std::string& deviceModel, const KOReaderPageStatsStore& store,
+                               const std::string& deviceTime = "");
 
   /**
    * Get human-readable error message.

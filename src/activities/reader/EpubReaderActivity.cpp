@@ -35,6 +35,7 @@
 #include "EpubReaderUtils.h"
 #include "GlobalActions.h"
 #include "KOReaderCredentialStore.h"
+#include "KOReaderDocumentId.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
 #include "NearbyBookPositionSyncActivity.h"
@@ -1251,6 +1252,70 @@ void EpubReaderActivity::recordForwardPagePaceSample(uint32_t seconds, const cha
   recoverStoredPaceFromSession("pace_sample");
 }
 
+namespace {
+// Convert a UTC calendar date/time to Unix epoch seconds without relying on the
+// system clock being configured (the DS3231 RTC keeps UTC, but only exposes
+// Y/M/D H:M). Uses Howard Hinnant's days-from-civil algorithm. Returns 0 for an
+// obviously-unset clock (year < 2020) so callers can skip the event.
+uint32_t utcEpochFromCivil(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute) {
+  if (year < 2020 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return 0;
+  }
+  int y = static_cast<int>(year);
+  const unsigned m = month;
+  const unsigned d = day;
+  y -= (m <= 2);
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1u;
+  const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+  const long days = static_cast<long>(era) * 146097L + static_cast<long>(doe) - 719468L;
+  const long long secs = static_cast<long long>(days) * 86400LL + hour * 3600LL + minute * 60LL;
+  if (secs <= 0) return 0;
+  return static_cast<uint32_t>(secs);
+}
+}  // namespace
+
+void EpubReaderActivity::capturePageStatEvent(uint32_t dwellSeconds) {
+  if (dwellSeconds == 0 || !epub || !section) {
+    return;
+  }
+
+  // Overall book progress (0..1) for the page just finished.
+  const int totalPages = section->pageCount;
+  if (totalPages <= 0) {
+    return;
+  }
+  const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(totalPages);
+  const float overall = epub->calculateSizeProgress(currentSpineIndex, chapterProgress);
+
+  // Real UTC epoch for the START of this page read: now minus the dwell.
+  uint16_t year = 0;
+  uint8_t month = 0, day = 0, hour = 0, minute = 0;
+  if (!halClock.getDateTime(year, month, day, hour, minute)) {
+    return;  // no RTC -> no meaningful timestamp; KOSync still carries progress
+  }
+  const uint32_t nowEpoch = utcEpochFromCivil(year, month, day, hour, minute);
+  if (nowEpoch == 0) {
+    return;
+  }
+  const uint32_t startEpoch = nowEpoch > dwellSeconds ? nowEpoch - dwellSeconds : nowEpoch;
+
+  // Lazily bind the buffer to this book's document hash on first event.
+  if (pageStatsStore.documentHash().empty()) {
+    const std::string hash = (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME)
+                                 ? KOReaderDocumentId::calculateFromFilename(epub->getPath())
+                                 : KOReaderDocumentId::calculate(epub->getPath());
+    if (hash.size() != 32) {
+      return;  // can't identify the document; skip stat capture
+    }
+    pageStatsStore.load(hash);
+  }
+
+  pageStatsStore.addEvent(startEpoch, dwellSeconds, overall);
+  pageStatsDirty = true;
+}
+
 bool EpubReaderActivity::getSessionAveragePaceSeconds(uint16_t& avgSeconds) const {
   avgSeconds = 0;
   if (sessionPaceSampleCount < MIN_SESSION_TIME_LEFT_PACE_SAMPLE_COUNT || sessionPaceSampleSeconds == 0) {
@@ -1838,6 +1903,9 @@ void EpubReaderActivity::onExit() {
       recoverStoredPaceFromSession("reader_exit");
       refreshCachedTimeLeftEstimate();
       stats.save(epub->getCachePath());
+      if (pageStatsDirty && pageStatsStore.save()) {
+        pageStatsDirty = false;
+      }
     }
     globalStats.save();
   }
@@ -3506,6 +3574,9 @@ void EpubReaderActivity::setBookCompleted(bool isCompleted) {
 
   refreshCachedTimeLeftEstimate();
   stats.save(epub->getCachePath());
+  if (pageStatsDirty && pageStatsStore.save()) {
+    pageStatsDirty = false;
+  }
   globalStats.save();
 }
 
@@ -3679,6 +3750,12 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn, const char* source) {
   if (isForwardTurn) {
     uint32_t forwardReadSeconds = 0;
     const bool shouldRecordForwardRead = forwardPageReadElapsed(forwardReadSeconds, source);
+    // Capture a BookOrbit page-stat event for the page being finished, using the
+    // current position BEFORE the page/section mutation below (so a chapter-exit
+    // turn, which resets `section`, is still recorded).
+    if (shouldRecordForwardRead) {
+      capturePageStatEvent(forwardReadSeconds);
+    }
     recordCurrentPageReadingTime(source);
     const bool exitingChapter = section && section->pageCount > 0 && section->currentPage >= section->pageCount - 1;
     if (section->currentPage < section->pageCount - 1) {

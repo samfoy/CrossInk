@@ -14,6 +14,7 @@
 #include "EndOfBookOptions.h"
 #include "EpubReaderMenuActivity.h"
 #include "GlobalReadingStats.h"
+#include "KOReaderPageStatsStore.h"
 #include "activities/Activity.h"
 
 struct ToastRect {
@@ -85,6 +86,12 @@ class EpubReaderActivity final : public Activity {
   GlobalReadingStats globalStats;
   ReadingStatsDateTime sessionStartLocalDateTime;
   bool hasSessionStartLocalDateTime = false;
+  // Buffers raw per-page reading events for upload to a BookOrbit KOReader
+  // plugin page-stats endpoint (feeds the reading streak / time / pace / DNA
+  // stats that plain KOSync progress can't). Persisted with the same debounce
+  // as `stats`; flushed to the server during KOReader sync.
+  KOReaderPageStatsStore pageStatsStore;
+  bool pageStatsDirty = false;
   // Signals that the next render should reposition within the newly loaded section
   // based on a cross-book percentage jump.
   bool pendingPercentJump = false;
@@ -173,6 +180,10 @@ class EpubReaderActivity final : public Activity {
   bool currentPageReadingSecondsForStats(uint32_t& seconds, const char* source) const;
   void recordCurrentPageReadingTime(const char* source = "unknown");
   void recordForwardPagePaceSample(uint32_t seconds, const char* source);
+  // Appends one page-stat event (dwell + overall progress + epoch time) to
+  // pageStatsStore for later upload to a BookOrbit page-stats endpoint. Cheap;
+  // only touches RAM (persisted later via the debounced stats save).
+  void capturePageStatEvent(uint32_t dwellSeconds);
   bool getSessionAveragePaceSeconds(uint16_t& avgSeconds) const;
   void recoverStoredPaceFromSession(const char* reason = "unknown");
   bool getTimeLeftPaceSeconds(uint16_t& avgSeconds, const char*& source, uint16_t& sampleCount) const;

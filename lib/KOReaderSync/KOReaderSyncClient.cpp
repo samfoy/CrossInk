@@ -211,6 +211,54 @@ esp_http_client_handle_t createClient(const char* url, ResponseBuffer* buf,
   return client;
 }
 #endif
+
+// Performs a JSON POST to `url` with `body`, reusing the same auth + TLS setup
+// as the other calls. Returns the HTTP status code (>0) or a negative transport
+// error. Sets outTransportErr to the transport-layer error code. Shared by
+// uploadPageStats so the chunk loop doesn't duplicate the #ifdef plumbing.
+int doJsonPost(const std::string& url, const std::string& body, int& outHttpCode, int& outTransportErr) {
+  outHttpCode = 0;
+  outTransportErr = 0;
+#ifdef SIMULATOR
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+  if (isHttpsUrl(url)) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
+  }
+  addAuthHeaders(http);
+  http.addHeader("Content-Type", "application/json");
+  const int httpCode = http.POST(reinterpret_cast<const uint8_t*>(body.data()), body.length());
+  http.end();
+  outHttpCode = httpCode;
+  outTransportErr = (httpCode < 0) ? httpCode : 0;
+  return httpCode;
+#else
+  ResponseBuffer buf;
+  esp_http_client_handle_t client = createClient(url.c_str(), &buf, HTTP_METHOD_POST);
+  if (!client) {
+    outTransportErr = ESP_ERR_NO_MEM;
+    return -1;
+  }
+  if (esp_http_client_set_header(client, "Content-Type", "application/json") != ESP_OK ||
+      esp_http_client_set_post_field(client, body.c_str(), body.length()) != ESP_OK) {
+    LOG_ERR("KOStats", "Failed to set page-stats request body");
+    outTransportErr = ESP_ERR_INVALID_STATE;
+    esp_http_client_cleanup(client);
+    return -1;
+  }
+  esp_err_t err = esp_http_client_perform(client);
+  const int httpCode = esp_http_client_get_status_code(client);
+  esp_http_client_cleanup(client);
+  outHttpCode = httpCode;
+  outTransportErr = static_cast<int>(err);
+  return (err != ESP_OK) ? -1 : httpCode;
+#endif
+}
 }  // namespace
 
 KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
@@ -486,6 +534,80 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
 #endif
+}
+
+KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string& deviceModel,
+                                                              const KOReaderPageStatsStore& store,
+                                                              const std::string& deviceTime) {
+  lastHttpCode = 0;
+  lastTransportError = 0;
+  if (!KOREADER_STORE.hasCredentials()) {
+    LOG_DBG("KOStats", "No credentials configured");
+    return NO_CREDENTIALS;
+  }
+  if (store.empty() || store.documentHash().size() != 32) {
+    return OK;  // nothing to upload
+  }
+
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_HEAP_FOR_TLS) {
+    LOG_ERR("KOStats", "Insufficient heap for TLS handshake: %u bytes free (need %u)", (unsigned)freeHeap,
+            (unsigned)MIN_HEAP_FOR_TLS);
+    return LOW_MEMORY;
+  }
+
+  const std::string url = KOREADER_STORE.getBaseUrl() + "/plugin/page-stats";
+  const auto& events = store.events();
+
+  // Chunk events to keep each JSON body small on the ESP32-C3's tight heap. The
+  // server clusters events across requests by (deviceId,bookFileId,startTime),
+  // so splitting a session across chunks is safe and idempotent.
+  constexpr size_t CHUNK = 60;
+  for (size_t start = 0; start < events.size(); start += CHUNK) {
+    const size_t end = std::min(start + CHUNK, events.size());
+
+    JsonDocument doc;
+    doc["deviceId"] = DEVICE_ID;
+    doc["deviceModel"] = deviceModel;
+    doc["pluginVersion"] = std::string("crossink-") + CROSSINK_VERSION;
+    if (!deviceTime.empty()) {
+      doc["deviceTime"] = deviceTime;
+    }
+    JsonArray books = doc["books"].to<JsonArray>();
+    JsonObject book = books.add<JsonObject>();
+    book["hash"] = store.documentHash();
+    JsonArray evs = book["events"].to<JsonArray>();
+    for (size_t i = start; i < end; ++i) {
+      const KOReaderPageStatEvent& e = events[i];
+      JsonObject ev = evs.add<JsonObject>();
+      ev["page"] = e.progressBp;                                    // basis points (0..10000)
+      ev["startTime"] = e.startTime;                                // unix epoch seconds
+      ev["durationSeconds"] = e.durationSeconds;                    // dwell time
+      ev["totalPages"] = KOReaderPageStatsStore::PROGRESS_SCALE;    // fixed denominator
+    }
+
+    std::string body;
+    serializeJson(doc, body);
+
+    int httpCode = 0;
+    int transportErr = 0;
+    LOG_DBG("KOStats", "Uploading page-stats chunk %u-%u (%u bytes, heap %u)", (unsigned)start, (unsigned)end,
+            (unsigned)body.length(), (unsigned)ESP.getFreeHeap());
+    doJsonPost(url, body, httpCode, transportErr);
+    lastHttpCode = httpCode;
+    lastTransportError = transportErr;
+
+    if (httpCode == 200 || httpCode == 201 || httpCode == 202 || httpCode == 204) {
+      continue;  // chunk accepted
+    }
+    if (httpCode == 401) return AUTH_FAILED;
+    if (httpCode == 404) return NOT_FOUND;  // server doesn't support the endpoint
+    if (httpCode <= 0) return NETWORK_ERROR;
+    return SERVER_ERROR;
+  }
+
+  LOG_INF("KOStats", "Uploaded %u page-stat events for %s", (unsigned)events.size(), store.documentHash().c_str());
+  return OK;
 }
 
 std::string KOReaderSyncClient::errorString(Error error) {
