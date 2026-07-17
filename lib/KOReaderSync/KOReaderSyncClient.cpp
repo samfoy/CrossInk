@@ -29,6 +29,13 @@ int KOReaderSyncClient::lastTransportError = 0;
 namespace {
 constexpr char DEVICE_ID[] = "crossink-device";
 
+// Client identifier sent in page-stats uploads. The server caps `pluginVersion`
+// at 20 chars, so this must stay short — do NOT use the full CROSSINK_VERSION
+// build string (branch builds like "1.4.0-dev+feat-bookorbit-pagestats" overflow
+// and the whole upload 400s). Bump the numeric suffix when the wire format of
+// the page-stats payload changes.
+constexpr char PAGESTATS_PLUGIN_VERSION[] = "crossink-ps-1";
+
 std::string formatHttpStatusMessage(int httpCode) {
   char buffer[96];
   snprintf(buffer, sizeof(buffer), tr(STR_KOREADER_SYNC_HTTP_STATUS_FORMAT), httpCode);
@@ -569,7 +576,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string&
     JsonDocument doc;
     doc["deviceId"] = DEVICE_ID;
     doc["deviceModel"] = deviceModel;
-    doc["pluginVersion"] = std::string("crossink-") + CROSSINK_VERSION;
+    doc["pluginVersion"] = PAGESTATS_PLUGIN_VERSION;
     if (!deviceTime.empty()) {
       doc["deviceTime"] = deviceTime;
     }
