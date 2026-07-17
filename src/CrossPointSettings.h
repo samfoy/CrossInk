@@ -449,6 +449,11 @@ class CrossPointSettings {
   // Debug/test builds can disable stat writes so navigation tests do not affect personal reading stats.
   uint8_t trackReadingStats = 1;
 #endif
+  // Opt-in: upload per-page reading events to a BookOrbit KOReader plugin
+  // page-stats endpoint during KOReader sync. OFF by default because plain
+  // kosync servers (sync.koreader.rocks, kosync-dotnet) don't implement that
+  // endpoint; enabling it only makes sense when syncing to a BookOrbit server.
+  uint8_t uploadReadingStats = 0;
 
   ~CrossPointSettings() = default;
 
@@ -492,6 +497,10 @@ class CrossPointSettings {
     return true;
 #endif
   }
+  // Whether to buffer + upload page-stat events to a BookOrbit page-stats
+  // endpoint during KOReader sync. Opt-in (default off); requires reading-stat
+  // tracking to be on, since it reuses the same per-page dwell measurement.
+  bool shouldUploadReadingStats() const { return uploadReadingStats != 0 && shouldTrackReadingStats(); }
   static const char* getDefaultDeviceName();
   const char* getEffectiveDeviceName() const;
   uint16_t getReadingIdleTimeThresholdSeconds() const;

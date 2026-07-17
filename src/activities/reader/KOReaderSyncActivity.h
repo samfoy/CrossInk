@@ -90,6 +90,10 @@ class KOReaderSyncActivity final : public Activity {
   void onWifiSelectionComplete(bool success);
   void performSync();
   void performUpload();
+  // Uploads any buffered page-turn events for the current book to the server's
+  // BookOrbit page-stats endpoint (feeds reading streak/time/pace/DNA stats).
+  // Best effort; must be called while WiFi is still connected.
+  void uploadPageStats();
   bool consumeInitialConfirmRelease();
   void ensureEpubLoaded();
   void saveProgressAndReturn(const CrossPointPosition& position);

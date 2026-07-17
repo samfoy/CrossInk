@@ -18,6 +18,7 @@
 #include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
+#include "ReadingStatsUtils.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
@@ -96,6 +97,9 @@ void KOReaderSyncActivity::saveProgressAndReturn(const CrossPointPosition& posit
     requestUpdate(true);
     return;
   }
+  // Reading happened regardless of sync direction: flush buffered page-stats
+  // while WiFi is still up (onExit -> silent reboot tears the radio down).
+  uploadPageStats();
   returnToReader();
 }
 
@@ -317,6 +321,16 @@ void KOReaderSyncActivity::performUpload() {
 
   const auto result = KOReaderSyncClient::updateProgress(progress);
 
+  // While WiFi is still up, also upload any buffered page-turn events to a
+  // BookOrbit page-stats endpoint. This is what feeds the reading streak / time
+  // / pace / DNA stats (plain KOSync progress does not create sessions). Best
+  // effort: failures here never fail the progress sync. On the public
+  // sync.koreader.rocks (no such endpoint) this 404s and we simply keep the
+  // buffer for a future BookOrbit sync.
+  if (result == KOReaderSyncClient::OK) {
+    uploadPageStats();
+  }
+
   // Drop the radio while user reads the result; full teardown happens at silent reboot.
   wifiOff();
 
@@ -335,6 +349,48 @@ void KOReaderSyncActivity::performUpload() {
     state = UPLOAD_COMPLETE;
   }
   requestUpdate(true);
+}
+
+void KOReaderSyncActivity::uploadPageStats() {
+  if (!SETTINGS.shouldUploadReadingStats()) {
+    return;  // opt-in feature disabled
+  }
+
+  KOReaderPageStatsStore store;
+  if (!store.load(documentHash) || store.empty()) {
+    return;  // nothing buffered for this book
+  }
+
+  // Mint a device-local wall-clock string for the server (KOReader datetimes
+  // carry no timezone). Best effort; empty is acceptable (server falls back).
+  std::string deviceTime;
+  ReadingStatsDateTime dt;
+  if (getCurrentLocalReadingStatsDateTime(dt) && dt.isValid()) {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u", dt.date.year, dt.date.month, dt.date.day, dt.hour,
+             dt.minute, dt.second);
+    deviceTime = buf;
+  }
+
+  const std::string model = SETTINGS.getEffectiveDeviceName();
+  const auto res = KOReaderSyncClient::uploadPageStats(model, store, deviceTime);
+  if (res == KOReaderSyncClient::OK) {
+    store.clear();  // remove the on-disk buffer only after the server accepted it
+    LOG_INF("KOSync", "Page-stats uploaded and buffer cleared");
+  } else if (res == KOReaderSyncClient::NOT_FOUND) {
+    // The server doesn't implement /plugin/page-stats (e.g. sync.koreader.rocks
+    // or kosync-dotnet). Drop the buffer so it can't accumulate to the cap and
+    // re-fire a doomed multi-request upload on every future sync. (Progress
+    // still syncs fine via kosync.) Re-enabling against a BookOrbit server later
+    // simply starts buffering fresh.
+    store.clear();
+    LOG_INF("KOSync", "Server has no page-stats endpoint (404); discarded buffered stats");
+  } else {
+    // Transient failure (network/auth/500): keep the buffer for a later retry
+    // (idempotent server-side, so overlap is safe).
+    LOG_DBG("KOSync", "Page-stats upload failed, will retry (err=%d, http=%d)", static_cast<int>(res),
+            KOReaderSyncClient::lastHttpCode);
+  }
 }
 
 void KOReaderSyncActivity::onEnter() {
