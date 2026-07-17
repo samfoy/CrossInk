@@ -239,7 +239,9 @@ void BookOrbitCatalogActivity::openBookDetail(int bookId) {
 
 std::string BookOrbitCatalogActivity::destPathForDetail() const {
   std::string base = detail.author.empty() ? detail.title : detail.title + " - " + detail.author;
-  return "/books/" + StringUtils::sanitizeFilename(base) + ".epub";
+  // Save to root, matching the OPDS browser — downloaded books then appear at the
+  // top level of the library like side-loaded ones (not hidden in a subfolder).
+  return "/" + StringUtils::sanitizeFilename(base) + ".epub";
 }
 
 void BookOrbitCatalogActivity::downloadCurrentBook() {

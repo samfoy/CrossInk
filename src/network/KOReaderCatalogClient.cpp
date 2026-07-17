@@ -293,6 +293,15 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
   }
 
   const int total = http.getSize();  // may be -1 if chunked
+
+  // Make sure the destination directory exists (e.g. /books) — openFileForWrite
+  // does not create parent dirs, and a fresh SD card may not have /books yet.
+  const size_t slash = destPath.rfind('/');
+  if (slash != std::string::npos && slash > 0) {
+    const std::string dir = destPath.substr(0, slash);
+    Storage.ensureDirectoryExists(dir.c_str());
+  }
+
   HalFile file;
   if (!Storage.openFileForWrite("BOCAT", destPath, file)) {
     http.end();
