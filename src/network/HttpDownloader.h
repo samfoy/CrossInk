@@ -19,6 +19,11 @@ class HttpDownloader {
   // streaming parser consume the response without buffering the whole body.
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
 
+  // How to authenticate the request. Basic = HTTP Basic (OPDS servers).
+  // KosyncHeader = KOReader/BookOrbit style x-auth-user + x-auth-key headers,
+  // where `password` is already the md5 of the real password.
+  enum class AuthMode { Basic, KosyncHeader };
+
   enum DownloadError {
     OK = 0,
     HTTP_ERROR,
@@ -28,32 +33,35 @@ class HttpDownloader {
 
   struct DownloadOptions {
     explicit DownloadOptions(bool preservePartial = false, bool resumePartial = false,
-                             CancelCallback shouldCancel = nullptr, size_t bufferSize = 0)
+                             CancelCallback shouldCancel = nullptr, size_t bufferSize = 0,
+                             AuthMode authMode = AuthMode::Basic)
         : preservePartial(preservePartial),
           resumePartial(resumePartial),
           shouldCancel(std::move(shouldCancel)),
-          bufferSize(bufferSize) {}
+          bufferSize(bufferSize),
+          authMode(authMode) {}
 
     bool preservePartial;
     bool resumePartial;
     CancelCallback shouldCancel;
     size_t bufferSize;
+    AuthMode authMode;
   };
 
   /**
    * Fetch text content from a URL with optional credentials.
    */
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", AuthMode authMode = AuthMode::Basic);
 
   static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", AuthMode authMode = AuthMode::Basic);
 
   /**
    * Stream the response body to onData as it arrives, without buffering it.
    */
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", AuthMode authMode = AuthMode::Basic);
 
   /**
    * Download a file to the SD card with optional credentials.

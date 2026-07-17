@@ -10,6 +10,7 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "browser/BookOrbitCatalogActivity.h"
 #include "home/AlertActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
@@ -231,6 +232,10 @@ void ActivityManager::goToBrowser() {
   } else {
     replaceActivity(std::make_unique<OpdsServerListActivity>(renderer, mappedInput, true));
   }
+}
+
+void ActivityManager::goToBookOrbitCatalog() {
+  replaceActivity(std::make_unique<BookOrbitCatalogActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToReader(std::string path, const bool suppressBackRelease) {

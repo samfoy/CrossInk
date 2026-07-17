@@ -20,13 +20,13 @@
 namespace {
 constexpr size_t PROGRESS_UPDATE_BYTES = 64 * 1024;
 constexpr uint32_t PROGRESS_UPDATE_MS = 250;
-// TLS record buffer for esp_http_client. A tiny buffer forces mbedTLS to
-// decrypt in fragments and throttles HTTPS throughput on the ESP32-C3, but this
-// buffer is allocated during the TLS handshake (the peak-memory moment, ~50 KB
-// free on the C3), so it can't be huge without risking OOM. 8 KB is a measured
-// compromise: ~2x the old throughput headroom while staying well clear of the
-// handshake OOM cliff. (For the biggest win, download over plain HTTP where the
-// device can reach the server without TLS — no per-record decrypt at all.)
+// TLS record buffer for esp_http_client. Allocated during the TLS handshake
+// (the peak-memory moment, ~50 KB free on the C3). HTTPS is the only download
+// path for a remote X3 (samfp.tech via Caddy), so this buffer directly governs
+// real-world download throughput — worth 8 KB (2x the old 4 KB) to cut the
+// fragmented-decrypt penalty. Kept below the handshake OOM cliff; the free-heap
+// logging in runGet() lets us confirm headroom on real hardware. If a device
+// ever OOMs here, drop to 6144.
 constexpr int HTTP_RX_BUF = 8192;
 constexpr int HTTP_TX_BUF = 2048;
 constexpr int HTTP_TIMEOUT_MS = 60000;
@@ -176,7 +176,8 @@ struct Sink {
 };
 
 void setRequestHeaders(esp_http_client_handle_t client, const std::string& username, const std::string& password,
-                       size_t resumeOffset, bool sendAuthorization) {
+                       size_t resumeOffset, bool sendAuthorization,
+                       HttpDownloader::AuthMode authMode = HttpDownloader::AuthMode::Basic) {
   esp_http_client_set_header(client, "User-Agent", "CrossInk-ESP32-" CROSSINK_VERSION);
   esp_http_client_set_header(client, "Connection", "close");
   if (resumeOffset > 0) {
@@ -186,9 +187,17 @@ void setRequestHeaders(esp_http_client_handle_t client, const std::string& usern
     LOG_DBG("HTTP", "Resuming download at byte %zu", resumeOffset);
   }
   if (sendAuthorization) {
-    const std::string credentials = username + ":" + password;
-    const String header = "Basic " + base64::encode(credentials.c_str());
-    esp_http_client_set_header(client, "Authorization", header.c_str());
+    if (authMode == HttpDownloader::AuthMode::KosyncHeader) {
+      // BookOrbit/KOReader catalog: x-auth-user + x-auth-key(md5 pw). `password`
+      // is already the md5 hex here (caller passes getMd5Password()).
+      esp_http_client_set_header(client, "x-auth-user", username.c_str());
+      esp_http_client_set_header(client, "x-auth-key", password.c_str());
+      esp_http_client_set_header(client, "Accept", "application/json");
+    } else {
+      const std::string credentials = username + ":" + password;
+      const String header = "Basic " + base64::encode(credentials.c_str());
+      esp_http_client_set_header(client, "Authorization", header.c_str());
+    }
   }
 }
 
@@ -203,7 +212,8 @@ void logTlsError(esp_http_client_handle_t client, const char* phase) {
 }
 
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
-                                     Sink& sink, const size_t bufferSize) {
+                                     Sink& sink, const size_t bufferSize,
+                                     HttpDownloader::AuthMode authMode = HttpDownloader::AuthMode::Basic) {
   std::string currentUrl = url;
 
   ParsedUrl credentialOrigin;
@@ -232,8 +242,16 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
       return HttpDownloader::HTTP_ERROR;
     }
 
-    setRequestHeaders(client, username, password, sink.resumeOffset, sendAuthorization);
+    setRequestHeaders(client, username, password, sink.resumeOffset, sendAuthorization, authMode);
 
+    // Free-heap headroom around the TLS handshake (esp_http_client_open does the
+    // handshake for https). This is the peak-memory moment; log it so we can
+    // confirm HTTP_RX_BUF (8 KB) isn't pushing the C3 toward OOM on real hardware.
+    const bool isHttps = currentParsed && currentOrigin.https;
+    if (isHttps) {
+      LOG_DBG("HTTP", "Pre-TLS-handshake heap: free=%u maxAlloc=%u (rxBuf=%d)", ESP.getFreeHeap(),
+              ESP.getMaxAllocHeap(), HTTP_RX_BUF);
+    }
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
       LOG_ERR("HTTP", "Open failed: %s", esp_err_to_name(err));
@@ -241,6 +259,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
       logNetworkState("Open failure");
       esp_http_client_cleanup(client);
       return HttpDownloader::HTTP_ERROR;
+    }
+    if (isHttps) {
+      LOG_DBG("HTTP", "Post-TLS-handshake heap: free=%u maxAlloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     }
 
     int64_t responseLength = esp_http_client_fetch_headers(client);
@@ -394,14 +415,14 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 }  // namespace
 
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, AuthMode authMode) {
   return fetchUrl(
       url, [&outContent](const uint8_t* data, size_t len) { return outContent.write(data, len) == len; }, username,
-      password);
+      password, authMode);
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, AuthMode authMode) {
   outContent.clear();
   return fetchUrl(
       url,
@@ -409,11 +430,11 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
         outContent.append(reinterpret_cast<const char*>(data), len);
         return true;
       },
-      username, password);
+      username, password, authMode);
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, AuthMode authMode) {
   WifiPowerSaveGuard wifiPowerSaveGuard;
   (void)wifiPowerSaveGuard;
 
@@ -426,7 +447,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 
   Sink sink;
   sink.write = onData;
-  return runGet(url, username, password, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE) == OK;
+  return runGet(url, username, password, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE, authMode) == OK;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
@@ -482,7 +503,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
 
-  DownloadError result = runGet(url, username, password, sink, bufferSize);
+  DownloadError result = runGet(url, username, password, sink, bufferSize, options.authMode);
   if (sink.rangeIgnored) {
     if (fileOpen) {
       file.close();
@@ -494,7 +515,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     sink.downloaded = 0;
     sink.total = 0;
     sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
-    result = runGet(url, username, password, sink, bufferSize);
+    result = runGet(url, username, password, sink, bufferSize, options.authMode);
   }
 
   if (fileOpen) {

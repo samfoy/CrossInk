@@ -28,6 +28,7 @@
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBookProgress.h"
@@ -54,6 +55,7 @@ enum class HomeMenuAction {
   ContinueReading,
   RecentBooks,
   OpdsBrowser,
+  BookOrbitLibrary,
   ReadingStats,
   Bookmarks,
   FileTransfer,
@@ -256,6 +258,9 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
   if (hasOpdsServers) {
     items.push({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
   }
+  if (KOREADER_STORE.hasCredentials()) {
+    items.push({tr(STR_BOOKORBIT_LIBRARY), Library, HomeMenuAction::BookOrbitLibrary});
+  }
   if (hasReadingStats) {
     items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
   }
@@ -457,6 +462,8 @@ void appendSyncedStatsStateToKey(std::string& key) {
 void appendCarouselMenuStateToKey(std::string& key, const bool hasOpdsServers, const bool hasReadingStats,
                                   const bool hasBookmarks, const bool hasClippings) {
   key += hasOpdsServers ? "opds:1" : "opds:0";
+  key += '\0';
+  key += KOREADER_STORE.hasCredentials() ? "bocat:1" : "bocat:0";
   key += '\0';
   key += hasReadingStats ? "stats:1" : "stats:0";
   key += '\0';
@@ -1458,6 +1465,9 @@ void HomeActivity::loop() {
           case HomeMenuAction::OpdsBrowser:
             onOpdsBrowserOpen();
             break;
+          case HomeMenuAction::BookOrbitLibrary:
+            onBookOrbitLibraryOpen();
+            break;
           case HomeMenuAction::ReadingStats:
             onReadingStatsOpen();
             break;
@@ -1653,6 +1663,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuAction::OpdsBrowser:
         onOpdsBrowserOpen();
+        break;
+      case HomeMenuAction::BookOrbitLibrary:
+        onBookOrbitLibraryOpen();
         break;
       case HomeMenuAction::ReadingStats:
         onReadingStatsOpen();
@@ -1889,6 +1902,8 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onBookOrbitLibraryOpen() { activityManager.goToBookOrbitCatalog(); }
 
 void HomeActivity::onReadingStatsOpen() {
   const int highlightedBookIdx = getHighlightedBookIndex();
