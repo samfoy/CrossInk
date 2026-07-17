@@ -401,10 +401,21 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
                                                                  void (*onProgress)(size_t, size_t, void*),
                                                                  void* progressCtx, const bool* cancelFlag,
                                                                  long knownTotal) {
+  return downloadUrlToFile(downloadUrl(fileId), destPath, onProgress, progressCtx, cancelFlag, knownTotal);
+}
+
+KOReaderCatalogClient::Error KOReaderCatalogClient::downloadThumbnail(int bookId, const std::string& destPath) {
+  return downloadUrlToFile(thumbnailUrl(bookId), destPath, nullptr, nullptr, nullptr, 0);
+}
+
+KOReaderCatalogClient::Error KOReaderCatalogClient::downloadUrlToFile(const std::string& url,
+                                                                      const std::string& destPath,
+                                                                      void (*onProgress)(size_t, size_t, void*),
+                                                                      void* progressCtx, const bool* cancelFlag,
+                                                                      long knownTotal) {
   if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
 
-  const std::string url = downloadUrl(fileId);
-  LOG_DBG("BOCAT", "download fileId=%d -> %s (freeHeap=%u)", fileId, destPath.c_str(), ESP.getFreeHeap());
+  LOG_DBG("BOCAT", "download %s -> %s (freeHeap=%u)", url.c_str(), destPath.c_str(), ESP.getFreeHeap());
 
   // Disable WiFi modem power-save for the duration — it otherwise adds ~100-200ms
   // latency per round-trip and badly throttles throughput. Big speed win.

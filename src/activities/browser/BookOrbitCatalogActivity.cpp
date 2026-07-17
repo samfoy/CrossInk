@@ -13,12 +13,18 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include <Bitmap.h>
 #include <HalStorage.h>
+#include <JpegToBmpConverter.h>
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
 
 namespace {
 constexpr int PAGE_ITEMS = 23;
+constexpr const char* THUMB_JPG_PATH = "/.bo_thumb.jpg";  // transient scratch files
+constexpr const char* THUMB_BMP_PATH = "/.bo_thumb.bmp";
+constexpr int COVER_MAX_W = 120;   // detail-screen cover box (px)
+constexpr int COVER_MAX_H = 180;
 
 // Labels for the browse menu rows (order matches BrowseMode enum).
 std::string browseModeTitle(int idx) {
@@ -331,14 +337,41 @@ void BookOrbitCatalogActivity::openBookDetail(int bookId) {
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) requestUpdate(true);
 
   downloadedPath.clear();
+  coverReady = false;
   const auto e = KOReaderCatalogClient::fetchDetail(bookId, detail);
   if (e != KOReaderCatalogClient::OK) {
     showError(catalogErr(e));
     return;
   }
   refreshDownloadedFlag();
+  fetchAndPrepareCover();
   state = State::DETAIL;
   requestUpdate();
+}
+
+void BookOrbitCatalogActivity::fetchAndPrepareCover() {
+  // Best-effort cover: fetch the JPEG thumbnail and convert it to a small 1-bit
+  // BMP for fast e-ink drawing. Any failure just leaves coverReady=false (the
+  // detail screen renders text-only). Runs at the detail screen where heap is at
+  // baseline (~78 KB), not the TLS-handshake trough.
+  coverReady = false;
+  if (!detail.hasCover) return;
+
+  if (KOReaderCatalogClient::downloadThumbnail(detail.id, THUMB_JPG_PATH) != KOReaderCatalogClient::OK) {
+    Storage.remove(THUMB_JPG_PATH);
+    return;
+  }
+  HalFile jpg, bmp;
+  bool ok = false;
+  if (Storage.openFileForRead("BOCAT", THUMB_JPG_PATH, jpg) &&
+      Storage.openFileForWrite("BOCAT", THUMB_BMP_PATH, bmp)) {
+    ok = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(jpg, bmp, COVER_MAX_W, COVER_MAX_H, true);
+  }
+  jpg.close();
+  bmp.close();
+  Storage.remove(THUMB_JPG_PATH);  // keep only the small BMP
+  coverReady = ok;
+  if (!ok) Storage.remove(THUMB_BMP_PATH);
 }
 
 void BookOrbitCatalogActivity::refreshDownloadedFlag() {
@@ -578,19 +611,37 @@ void BookOrbitCatalogActivity::render(RenderLock&&) {
   }
 
   if (state == State::DETAIL) {
+    // Draw the cover (if prepared) in the top-right; text column narrows to fit.
+    int textW = pageWidth - 40;
+    if (coverReady) {
+      HalFile bmpFile;
+      if (Storage.openFileForRead("BOCAT", THUMB_BMP_PATH, bmpFile)) {
+        Bitmap bitmap(bmpFile, false);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          const int cw = bitmap.getWidth();
+          const int ch = bitmap.getHeight();
+          const int cx = pageWidth - cw - 18;
+          renderer.drawBitmap1Bit(bitmap, cx, 46, cw, ch);
+          textW = cx - 40;  // leave room for the cover
+        }
+        bmpFile.close();
+      }
+    }
+    if (textW < 120) textW = 120;  // guard: always leave a readable text column
+
     int y = 50;
-    auto t = renderer.truncatedText(UI_12_FONT_ID, detail.title.c_str(), pageWidth - 40);
+    auto t = renderer.truncatedText(UI_12_FONT_ID, detail.title.c_str(), textW);
     renderer.drawText(UI_12_FONT_ID, 20, y, t.c_str(), true, EpdFontFamily::BOLD);
     y += 26;
     if (!detail.author.empty()) {
-      auto a = renderer.truncatedText(UI_10_FONT_ID, detail.author.c_str(), pageWidth - 40);
+      auto a = renderer.truncatedText(UI_10_FONT_ID, detail.author.c_str(), textW);
       renderer.drawText(UI_10_FONT_ID, 20, y, a.c_str());
       y += 22;
     }
     if (!detail.seriesName.empty()) {
       std::string s = detail.seriesName;
       if (detail.seriesIndex >= 0) s += " #" + std::to_string(detail.seriesIndex);
-      auto sr = renderer.truncatedText(UI_10_FONT_ID, s.c_str(), pageWidth - 40);
+      auto sr = renderer.truncatedText(UI_10_FONT_ID, s.c_str(), textW);
       renderer.drawText(UI_10_FONT_ID, 20, y, sr.c_str());
       y += 22;
     }

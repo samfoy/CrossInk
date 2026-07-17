@@ -127,6 +127,12 @@ class KOReaderCatalogClient {
                             void (*onProgress)(size_t, size_t, void*) = nullptr, void* progressCtx = nullptr,
                             const bool* cancelFlag = nullptr, long knownTotal = 0);
 
+  // Download a book's cover thumbnail (JPEG) to destPath on the SD card, using
+  // the same insecure-TLS stack as downloadFile. Small (~50 KB) and only fetched
+  // on the detail screen (heap at baseline, not the handshake trough). Returns OK
+  // on success; caller converts JPEG->BMP for display.
+  static Error downloadThumbnail(int bookId, const std::string& destPath);
+
   static const char* errorString(Error e);
 
  private:
@@ -134,4 +140,9 @@ class KOReaderCatalogClient {
   static std::string catalogBase();
   // GET url into outBody using kosync header auth; classifies 404 as UNAVAILABLE.
   static Error httpGetJson(const std::string& url, std::string& outBody);
+  // Shared HTTP-to-SD download core (insecure TLS, chunked-decode via
+  // writeToStream). Used by downloadFile + downloadThumbnail.
+  static Error downloadUrlToFile(const std::string& url, const std::string& destPath,
+                                 void (*onProgress)(size_t, size_t, void*), void* progressCtx,
+                                 const bool* cancelFlag, long knownTotal);
 };
