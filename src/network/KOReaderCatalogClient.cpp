@@ -61,25 +61,57 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::httpGetJson(const std::strin
   outBody.clear();
 
   LOG_DBG("BOCAT", "GET %s (freeHeap=%u)", url.c_str(), ESP.getFreeHeap());
-  int status = 0;
-  const bool ok = HttpDownloader::fetchUrlWithStatus(
-      url,
-      [&outBody](const uint8_t* data, size_t len) {
-        outBody.append(reinterpret_cast<const char*>(data), len);
-        return true;
-      },
-      status, KOREADER_STORE.getUsername(), KOREADER_STORE.getMd5Password(),
-      HttpDownloader::AuthMode::KosyncHeader);
 
-  LOG_DBG("BOCAT", "GET done: ok=%d status=%d bytes=%u freeHeap=%u", ok ? 1 : 0, status,
+  // Use the same TLS path as the working kosync client: WiFiClientSecure with
+  // setInsecure() (skip cert verification). This deliberately avoids
+  // esp_crt_bundle_attach, which loads the whole Mozilla CA bundle into RAM and
+  // pushes the C3 into OOM during the handshake (~5 KB free at the peak). The
+  // kosync PUT/page-stats already talk to this same server this way.
+  const bool https = url.rfind("https://", 0) == 0;
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+#ifdef SIMULATOR
+  // Mock HTTPClient::begin() returns void.
+  if (https) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
+  }
+#else
+  bool begun = false;
+  if (https) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    begun = http.begin(*secureClient, url.c_str());
+  } else {
+    begun = http.begin(plainClient, url.c_str());
+  }
+  if (!begun) {
+    LOG_ERR("BOCAT", "http.begin failed");
+    return NETWORK_ERROR;
+  }
+#endif
+
+  http.addHeader("x-auth-user", KOREADER_STORE.getUsername().c_str());
+  http.addHeader("x-auth-key", KOREADER_STORE.getMd5Password().c_str());
+  http.addHeader("Accept", "application/json");
+
+  const int status = http.GET();
+  if (status == 200) {
+    outBody = http.getString().c_str();
+  }
+  http.end();
+
+  LOG_DBG("BOCAT", "GET done: status=%d bytes=%u freeHeap=%u", status,
           static_cast<unsigned>(outBody.size()), ESP.getFreeHeap());
 
-  if (ok) return OK;
-  // Classify the failure from the real HTTP status so the UI can distinguish a
-  // genuine "no catalog" (404) from auth/transport/heap problems.
+  if (status == 200) return OK;
   if (status == 404 || status == 405 || status == 501) return UNAVAILABLE;
   if (status == 401 || status == 403) return NO_CREDENTIALS;
-  return NETWORK_ERROR;  // status 0 = never connected / TLS / heap; 5xx = server
+  return NETWORK_ERROR;  // <0 = transport/TLS/heap; 5xx = server
 }
 
 KOReaderCatalogClient::Error KOReaderCatalogClient::fetchContinueReading(std::vector<BookOrbitCatalogItem>& out) {

@@ -34,18 +34,23 @@ class HttpDownloader {
   struct DownloadOptions {
     explicit DownloadOptions(bool preservePartial = false, bool resumePartial = false,
                              CancelCallback shouldCancel = nullptr, size_t bufferSize = 0,
-                             AuthMode authMode = AuthMode::Basic)
+                             AuthMode authMode = AuthMode::Basic, bool insecureTls = false)
         : preservePartial(preservePartial),
           resumePartial(resumePartial),
           shouldCancel(std::move(shouldCancel)),
           bufferSize(bufferSize),
-          authMode(authMode) {}
+          authMode(authMode),
+          insecureTls(insecureTls) {}
 
     bool preservePartial;
     bool resumePartial;
     CancelCallback shouldCancel;
     size_t bufferSize;
     AuthMode authMode;
+    // Skip TLS certificate verification (no CA bundle loaded). Saves ~30-40 KB
+    // of heap during the handshake on the memory-starved ESP32-C3 — needed for
+    // the BookOrbit catalog download, matching the kosync client's setInsecure().
+    bool insecureTls;
   };
 
   /**

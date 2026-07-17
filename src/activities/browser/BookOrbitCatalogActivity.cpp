@@ -276,6 +276,7 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
   opts.shouldCancel = pollCancel;
   opts.bufferSize = CATALOG_DOWNLOAD_BUFFER_SIZE;
   opts.authMode = HttpDownloader::AuthMode::KosyncHeader;
+  opts.insecureTls = true;  // skip CA bundle to survive the C3's tight TLS heap
 
   const auto result = HttpDownloader::downloadToFile(
       url, dest,

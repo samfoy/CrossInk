@@ -220,7 +220,8 @@ void logTlsError(esp_http_client_handle_t client, const char* phase) {
 
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
                                      Sink& sink, const size_t bufferSize,
-                                     HttpDownloader::AuthMode authMode = HttpDownloader::AuthMode::Basic) {
+                                     HttpDownloader::AuthMode authMode = HttpDownloader::AuthMode::Basic,
+                                     bool insecureTls = false) {
   std::string currentUrl = url;
 
   ParsedUrl credentialOrigin;
@@ -237,7 +238,14 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     config.buffer_size = HTTP_RX_BUF;
     config.buffer_size_tx = HTTP_TX_BUF;
     config.timeout_ms = HTTP_TIMEOUT_MS;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+    // Insecure mode skips the CA bundle (saves ~30-40 KB heap during the TLS
+    // handshake on the C3); otherwise verify against the Mozilla bundle.
+    if (insecureTls) {
+      config.crt_bundle_attach = nullptr;
+      config.skip_cert_common_name_check = true;
+    } else {
+      config.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     config.keep_alive_enable = false;
     config.event_handler = captureLocationHeader;
     config.user_data = &redirectLocation;
@@ -530,7 +538,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
 
-  DownloadError result = runGet(url, username, password, sink, bufferSize, options.authMode);
+  DownloadError result = runGet(url, username, password, sink, bufferSize, options.authMode, options.insecureTls);
   if (sink.rangeIgnored) {
     if (fileOpen) {
       file.close();
@@ -542,7 +550,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     sink.downloaded = 0;
     sink.total = 0;
     sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
-    result = runGet(url, username, password, sink, bufferSize, options.authMode);
+    result = runGet(url, username, password, sink, bufferSize, options.authMode, options.insecureTls);
   }
 
   if (fileOpen) {
