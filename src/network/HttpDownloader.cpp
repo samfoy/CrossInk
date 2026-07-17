@@ -20,12 +20,23 @@
 namespace {
 constexpr size_t PROGRESS_UPDATE_BYTES = 64 * 1024;
 constexpr uint32_t PROGRESS_UPDATE_MS = 250;
-constexpr int HTTP_RX_BUF = 4096;
-constexpr int HTTP_TX_BUF = 1024;
+// TLS record buffer for esp_http_client. A tiny buffer forces mbedTLS to
+// decrypt in fragments and throttles HTTPS throughput on the ESP32-C3, but this
+// buffer is allocated during the TLS handshake (the peak-memory moment, ~50 KB
+// free on the C3), so it can't be huge without risking OOM. 8 KB is a measured
+// compromise: ~2x the old throughput headroom while staying well clear of the
+// handshake OOM cliff. (For the biggest win, download over plain HTTP where the
+// device can reach the server without TLS — no per-record decrypt at all.)
+constexpr int HTTP_RX_BUF = 8192;
+constexpr int HTTP_TX_BUF = 2048;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr int HTTP_READ_POLL_TIMEOUT_MS = 5000;
 constexpr uint32_t DOWNLOAD_IDLE_TIMEOUT_MS = 30000;
-constexpr size_t DEFAULT_DOWNLOAD_BUFFER_SIZE = 2048;
+// Body read / SD write chunk. Larger chunks mean far fewer decrypt+write cycles
+// and bigger, FAT-friendly SD writes, which dominates C3 download throughput.
+// This is a transient heap alloc during the download only (freed on cleanup),
+// not tied to the handshake, so it can be larger than the TLS buffer.
+constexpr size_t DEFAULT_DOWNLOAD_BUFFER_SIZE = 16384;
 constexpr uint8_t MAX_REDIRECTS = 5;
 
 void logNetworkState(const char* phase) {
