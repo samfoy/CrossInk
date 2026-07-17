@@ -37,6 +37,13 @@ constexpr uint32_t DOWNLOAD_IDLE_TIMEOUT_MS = 30000;
 // This is a transient heap alloc during the download only (freed on cleanup),
 // not tied to the handshake, so it can be larger than the TLS buffer.
 constexpr size_t DEFAULT_DOWNLOAD_BUFFER_SIZE = 16384;
+// Read buffer for streaming GETs (fetchUrl / fetchUrlWithStatus). The body is
+// streamed to a callback, so this only sizes the per-read chunk, NOT the whole
+// response — a small buffer is fine and, crucially, allocatable right after the
+// TLS handshake when free heap on the C3 is at its tightest (~50 KB). The 16 KB
+// DEFAULT above is only for large file downloads (downloadToFile), which run
+// after headers when more heap is free.
+constexpr size_t FETCH_READ_BUFFER_SIZE = 4096;
 constexpr uint8_t MAX_REDIRECTS = 5;
 
 void logNetworkState(const char* phase) {
@@ -449,7 +456,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 
   Sink sink;
   sink.write = onData;
-  return runGet(url, username, password, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE, authMode) == OK;
+  return runGet(url, username, password, sink, FETCH_READ_BUFFER_SIZE, authMode) == OK;
 }
 
 bool HttpDownloader::fetchUrlWithStatus(const std::string& url, const DataCallback& onData, int& outStatus,
@@ -468,7 +475,7 @@ bool HttpDownloader::fetchUrlWithStatus(const std::string& url, const DataCallba
   Sink sink;
   sink.write = onData;
   sink.statusOut = &outStatus;
-  return runGet(url, username, password, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE, authMode) == OK;
+  return runGet(url, username, password, sink, FETCH_READ_BUFFER_SIZE, authMode) == OK;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,

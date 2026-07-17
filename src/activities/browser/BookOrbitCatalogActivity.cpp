@@ -19,7 +19,11 @@
 namespace {
 constexpr int PAGE_ITEMS = 23;
 constexpr int SECTION_COUNT = 2;  // Continue Reading, All Books
-constexpr size_t CATALOG_DOWNLOAD_BUFFER_SIZE = 16384;
+// Read buffer for book downloads. Allocated right after the TLS handshake when
+// the C3 heap is fragmented (hardware log showed ~34 KB max contiguous alloc
+// even with ~78 KB free), so keep it modest — 8 KB streams fine and allocates
+// reliably. The body streams to SD, so this is only the per-read chunk size.
+constexpr size_t CATALOG_DOWNLOAD_BUFFER_SIZE = 8192;
 
 std::string sectionTitle(int idx) {
   return idx == 0 ? std::string(tr(STR_CONTINUE_READING)) : std::string(tr(STR_ALL_BOOKS));
