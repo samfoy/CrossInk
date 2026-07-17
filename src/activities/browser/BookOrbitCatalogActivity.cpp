@@ -180,24 +180,37 @@ void BookOrbitCatalogActivity::loop() {
 }
 
 void BookOrbitCatalogActivity::enterSections() {
-  state = State::SECTIONS;
   selectorIndex = 0;
   items.clear();
-  requestUpdate();
-}
 
-void BookOrbitCatalogActivity::loadContinueReading() {
+  // Fetch dashboard stats once per visit (streak/goal/total + the Continue
+  // Reading list). If we already have them (returning from a sub-list), just
+  // show the sections screen without re-fetching.
+  if (dashboardLoaded) {
+    state = State::SECTIONS;
+    requestUpdate();
+    return;
+  }
+
   state = State::LOADING;
   statusMessage = tr(STR_LOADING);
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) requestUpdate(true);
 
-  items.clear();
-  const auto e = KOReaderCatalogClient::fetchContinueReading(items);
+  const auto e = KOReaderCatalogClient::fetchDashboard(dashboard, continueReadingCache);
   if (e != KOReaderCatalogClient::OK) {
     showError(catalogErr(e));
     return;
   }
+  dashboardLoaded = true;
+  state = State::SECTIONS;
+  requestUpdate();
+}
+
+void BookOrbitCatalogActivity::loadContinueReading() {
+  // Reuse the list already fetched with the dashboard — no second round-trip.
+  items = continueReadingCache;
   selectorIndex = 0;
+  section = Section::CONTINUE_READING;
   state = State::LIST;
   requestUpdate();
 }
@@ -256,6 +269,8 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
   requestUpdate(true);
 
   const std::string dest = destPathForDetail();
+  lastDownloadPaintMs = 0;
+  lastDownloadPct = -1;
 
   // Download via the catalog client's insecure-TLS path (WiFiClientSecure +
   // setInsecure), the same stack kosync uses — the esp_http_client/HttpDownloader
@@ -266,13 +281,24 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
         auto* self = static_cast<BookOrbitCatalogActivity*>(ctx);
         self->downloadProgress = downloaded;
         self->downloadTotal = total;
-        // Poll Back to allow cancel, and repaint the progress bar.
+        // Poll Back to allow cancel.
         self->mappedInput.update();
         if (self->mappedInput.isPressed(MappedInputManager::Button::Back) ||
             self->mappedInput.wasReleased(MappedInputManager::Button::Back)) {
           self->cancelRequested = true;
         }
-        self->requestUpdate(true);
+        // Throttle e-ink repaints: a full refresh is ~380 ms, so repainting every
+        // 4 KB chunk would make the download take minutes of screen time alone.
+        // Only repaint when the whole-percent changes AND at most ~1/sec.
+        const int pct = total > 0 ? static_cast<int>((downloaded * 100) / total) : -1;
+        const uint32_t now = millis();
+        if (self->cancelRequested || pct != self->lastDownloadPct) {
+          if (self->cancelRequested || now - self->lastDownloadPaintMs > 1000) {
+            self->lastDownloadPaintMs = now;
+            self->lastDownloadPct = pct;
+            self->requestUpdate(true);
+          }
+        }
       },
       this, &cancelRequested);
 
@@ -368,6 +394,16 @@ void BookOrbitCatalogActivity::render(RenderLock&&) {
     if (downloadTotal > 0) {
       GUI.drawProgressBar(renderer, Rect{50, pageHeight / 2 + 20, pageWidth - 100, 20}, downloadProgress,
                           downloadTotal);
+      char pctLine[48];
+      const int pct = static_cast<int>((downloadProgress * 100) / downloadTotal);
+      snprintf(pctLine, sizeof(pctLine), "%d%%  (%u / %u KB)", pct,
+               static_cast<unsigned>(downloadProgress / 1024), static_cast<unsigned>(downloadTotal / 1024));
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 55, pctLine);
+    } else if (downloadProgress > 0) {
+      // Unknown total (chunked): show bytes received so the user sees motion.
+      char bytesLine[32];
+      snprintf(bytesLine, sizeof(bytesLine), "%u KB", static_cast<unsigned>(downloadProgress / 1024));
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 30, bytesLine);
     }
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -378,9 +414,42 @@ void BookOrbitCatalogActivity::render(RenderLock&&) {
   if (state == State::SECTIONS) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.fillRect(0, 60 + selectorIndex * 30 - 2, pageWidth - 1, 30);
+
+    // --- Dashboard stats header ---
+    int y = 50;
+    if (!dashboard.displayName.empty()) {
+      auto who = renderer.truncatedText(UI_10_FONT_ID, dashboard.displayName.c_str(), pageWidth - 40);
+      renderer.drawText(UI_10_FONT_ID, 20, y, who.c_str());
+      y += 26;
+    }
+    char line[64];
+    if (dashboard.currentStreak >= 0) {
+      snprintf(line, sizeof(line), "%s: %d %s", tr(STR_READING_STREAK), dashboard.currentStreak,
+               dashboard.currentStreak == 1 ? tr(STR_DAY) : tr(STR_DAYS));
+      renderer.drawText(UI_10_FONT_ID, 20, y, line);
+      y += 24;
+    }
+    if (dashboard.goalBooks >= 0) {
+      snprintf(line, sizeof(line), "%s: %d / %d", tr(STR_READING_GOAL), dashboard.goalCompleted,
+               dashboard.goalBooks);
+      renderer.drawText(UI_10_FONT_ID, 20, y, line);
+      y += 24;
+    }
+    if (dashboard.totalBooks >= 0) {
+      snprintf(line, sizeof(line), "%s: %d", tr(STR_TOTAL_BOOKS), dashboard.totalBooks);
+      renderer.drawText(UI_10_FONT_ID, 20, y, line);
+      y += 24;
+    }
+
+    // Divider + section rows below the stats.
+    y += 6;
+    renderer.drawLine(20, y, pageWidth - 20, y);
+    y += 10;
+    const int rowTop = y;
+    constexpr int ROW_H = 30;
+    renderer.fillRect(0, rowTop + selectorIndex * ROW_H - 2, pageWidth - 1, ROW_H);
     for (int i = 0; i < SECTION_COUNT; i++) {
-      renderer.drawText(UI_10_FONT_ID, 20, 60 + i * 30, sectionTitle(i).c_str(), i != selectorIndex);
+      renderer.drawText(UI_10_FONT_ID, 20, rowTop + i * ROW_H, sectionTitle(i).c_str(), i != selectorIndex);
     }
     renderer.displayBuffer();
     return;

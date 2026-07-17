@@ -38,6 +38,17 @@ struct BookOrbitCatalogPage {
   bool hasNext = false;
 };
 
+// Dashboard summary stats (from /catalog/dashboard) for the landing screen.
+struct BookOrbitDashboard {
+  int currentStreak = -1;   // consecutive reading days; <0 = unknown
+  int longestStreak = -1;
+  int goalBooks = -1;       // reading-goal target for the year; <0 = no goal
+  int goalCompleted = -1;   // books completed toward the goal
+  int goalYear = 0;
+  int totalBooks = -1;      // total books in the library; <0 = unknown
+  std::string displayName;  // server-side display name (may be empty)
+};
+
 // Detail for one book, including the downloadable primary file.
 struct BookOrbitCatalogDetail {
   int id = 0;
@@ -65,6 +76,10 @@ class KOReaderCatalogClient {
 
   // Dashboard "Continue Reading" list (books in progress). Small; one call.
   static Error fetchContinueReading(std::vector<BookOrbitCatalogItem>& out);
+
+  // Fetch the full dashboard in one call: summary stats + the Continue Reading
+  // list. Feeds the landing screen (streak, reading goal, total books).
+  static Error fetchDashboard(BookOrbitDashboard& stats, std::vector<BookOrbitCatalogItem>& continueReading);
 
   // Paginated all-books list. sort is a catalog sort key (e.g. "title",
   // "recently_added"); page is 1-based.

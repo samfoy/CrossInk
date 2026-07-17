@@ -114,26 +114,50 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::httpGetJson(const std::strin
   return NETWORK_ERROR;  // <0 = transport/TLS/heap; 5xx = server
 }
 
-KOReaderCatalogClient::Error KOReaderCatalogClient::fetchContinueReading(std::vector<BookOrbitCatalogItem>& out) {
-  out.clear();
+KOReaderCatalogClient::Error KOReaderCatalogClient::fetchDashboard(BookOrbitDashboard& stats,
+                                                                   std::vector<BookOrbitCatalogItem>& continueReading) {
+  stats = BookOrbitDashboard{};
+  continueReading.clear();
+
   std::string body;
   const Error e = httpGetJson(catalogBase() + "/dashboard", body);
   if (e != OK) return e;
 
-  // Dashboard carries several sections; we only want continueReading. Filter the
-  // JSON to that array before parsing to keep the document small for the C3 heap.
   JsonDocument doc;
   const DeserializationError jerr = deserializeJson(doc, body);
   if (jerr) return PARSE_ERROR;
 
+  // Summary stats (all optional; leave as -1/unknown when absent).
+  const char* dn = doc["displayName"].as<const char*>();
+  if (dn) stats.displayName = dn;
+  stats.totalBooks = doc["totalBooks"] | -1;
+
+  JsonObjectConst streak = doc["readingStreak"].as<JsonObjectConst>();
+  if (!streak.isNull()) {
+    stats.currentStreak = streak["currentStreak"] | -1;
+    stats.longestStreak = streak["longestStreak"] | -1;
+  }
+  JsonObjectConst goal = doc["readingGoal"].as<JsonObjectConst>();
+  if (!goal.isNull()) {
+    stats.goalBooks = goal["goalBooks"] | -1;
+    stats.goalCompleted = goal["completedBooks"] | -1;
+    stats.goalYear = goal["year"] | 0;
+  }
+
   JsonArrayConst cr = doc["continueReading"].as<JsonArrayConst>();
-  if (cr.isNull()) return OK;  // no in-progress books is not an error
-  for (JsonObjectConst o : cr) {
-    BookOrbitCatalogItem it;
-    parseItem(o, it);
-    if (it.id > 0) out.push_back(it);
+  if (!cr.isNull()) {
+    for (JsonObjectConst o : cr) {
+      BookOrbitCatalogItem it;
+      parseItem(o, it);
+      if (it.id > 0) continueReading.push_back(it);
+    }
   }
   return OK;
+}
+
+KOReaderCatalogClient::Error KOReaderCatalogClient::fetchContinueReading(std::vector<BookOrbitCatalogItem>& out) {
+  BookOrbitDashboard ignoredStats;
+  return fetchDashboard(ignoredStats, out);
 }
 
 KOReaderCatalogClient::Error KOReaderCatalogClient::fetchBooks(const std::string& sort, int page,

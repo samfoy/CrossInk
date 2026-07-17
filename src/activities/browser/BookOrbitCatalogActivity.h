@@ -54,6 +54,11 @@ class BookOrbitCatalogActivity final : public Activity {
   std::string statusMessage;
   std::string errorMessage;
 
+  // Dashboard summary stats shown on the sections landing screen.
+  BookOrbitDashboard dashboard;
+  bool dashboardLoaded = false;
+  std::vector<BookOrbitCatalogItem> continueReadingCache;
+
   // Current section + list data.
   Section section = Section::CONTINUE_READING;
   std::vector<BookOrbitCatalogItem> items;
@@ -67,6 +72,8 @@ class BookOrbitCatalogActivity final : public Activity {
   size_t downloadProgress = 0;
   size_t downloadTotal = 0;
   bool cancelRequested = false;
+  uint32_t lastDownloadPaintMs = 0;  // e-ink repaint throttle during download
+  int lastDownloadPct = -1;
 
   void checkAndConnectWifi();
   void launchWifiSelection();
