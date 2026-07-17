@@ -239,7 +239,10 @@ int doJsonPost(const std::string& url, const std::string& body, int& outHttpCode
   }
   addAuthHeaders(http);
   http.addHeader("Content-Type", "application/json");
-  const int httpCode = http.POST(reinterpret_cast<const uint8_t*>(body.data()), body.length());
+  // The simulator's mock HTTPClient only exposes POST(const char*); the real
+  // Arduino HTTPClient also has POST(uint8_t*, len). body is a std::string so
+  // c_str() is safe for both (JSON has no embedded NULs).
+  const int httpCode = http.POST(body.c_str());
   http.end();
   outHttpCode = httpCode;
   outTransportErr = (httpCode < 0) ? httpCode : 0;
