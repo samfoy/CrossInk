@@ -352,6 +352,10 @@ void KOReaderSyncActivity::performUpload() {
 }
 
 void KOReaderSyncActivity::uploadPageStats() {
+  if (!SETTINGS.shouldUploadReadingStats()) {
+    return;  // opt-in feature disabled
+  }
+
   KOReaderPageStatsStore store;
   if (!store.load(documentHash) || store.empty()) {
     return;  // nothing buffered for this book
@@ -373,10 +377,18 @@ void KOReaderSyncActivity::uploadPageStats() {
   if (res == KOReaderSyncClient::OK) {
     store.clear();  // remove the on-disk buffer only after the server accepted it
     LOG_INF("KOSync", "Page-stats uploaded and buffer cleared");
+  } else if (res == KOReaderSyncClient::NOT_FOUND) {
+    // The server doesn't implement /plugin/page-stats (e.g. sync.koreader.rocks
+    // or kosync-dotnet). Drop the buffer so it can't accumulate to the cap and
+    // re-fire a doomed multi-request upload on every future sync. (Progress
+    // still syncs fine via kosync.) Re-enabling against a BookOrbit server later
+    // simply starts buffering fresh.
+    store.clear();
+    LOG_INF("KOSync", "Server has no page-stats endpoint (404); discarded buffered stats");
   } else {
-    // Keep the buffer for a later retry (idempotent server-side). NOT_FOUND
-    // means this server doesn't support the endpoint (e.g. sync.koreader.rocks).
-    LOG_DBG("KOSync", "Page-stats upload skipped/failed (err=%d, http=%d)", static_cast<int>(res),
+    // Transient failure (network/auth/500): keep the buffer for a later retry
+    // (idempotent server-side, so overlap is safe).
+    LOG_DBG("KOSync", "Page-stats upload failed, will retry (err=%d, http=%d)", static_cast<int>(res),
             KOReaderSyncClient::lastHttpCode);
   }
 }

@@ -1280,6 +1280,12 @@ void EpubReaderActivity::capturePageStatEvent(uint32_t dwellSeconds) {
   if (dwellSeconds == 0 || !epub || !section) {
     return;
   }
+  // Opt-in only: don't buffer anything unless the user enabled BookOrbit
+  // page-stats upload. Keeps plain-kosync users unaffected (no SD writes, no
+  // buffer growth, nothing uploaded).
+  if (!SETTINGS.shouldUploadReadingStats()) {
+    return;
+  }
 
   // Overall book progress (0..1) for the page just finished.
   const int totalPages = section->pageCount;

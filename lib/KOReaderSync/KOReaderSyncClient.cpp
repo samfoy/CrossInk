@@ -608,7 +608,9 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string&
       continue;  // chunk accepted
     }
     if (httpCode == 401) return AUTH_FAILED;
-    if (httpCode == 404) return NOT_FOUND;  // server doesn't support the endpoint
+    if (httpCode == 404 || httpCode == 405 || httpCode == 501) {
+      return NOT_FOUND;  // server doesn't implement/allow this endpoint (plain kosync)
+    }
     if (httpCode <= 0) return NETWORK_ERROR;
     return SERVER_ERROR;
   }
