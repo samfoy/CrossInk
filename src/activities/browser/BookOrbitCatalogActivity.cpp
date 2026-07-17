@@ -26,8 +26,16 @@ std::string sectionTitle(int idx) {
 }
 
 std::string catalogErr(KOReaderCatalogClient::Error e) {
-  return e == KOReaderCatalogClient::UNAVAILABLE ? std::string(tr(STR_CATALOG_UNAVAILABLE))
-                                                 : std::string(tr(STR_FETCH_FEED_FAILED));
+  switch (e) {
+    case KOReaderCatalogClient::UNAVAILABLE:
+      return std::string(tr(STR_CATALOG_UNAVAILABLE));
+    case KOReaderCatalogClient::NO_CREDENTIALS:
+      return std::string(tr(STR_NO_CREDENTIALS_MSG));
+    case KOReaderCatalogClient::PARSE_ERROR:
+      return std::string(tr(STR_PARSE_FEED_FAILED));
+    default:
+      return std::string(tr(STR_FETCH_FEED_FAILED));  // network/transport/heap
+  }
 }
 }  // namespace
 

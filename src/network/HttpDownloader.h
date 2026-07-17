@@ -64,6 +64,15 @@ class HttpDownloader {
                        const std::string& password = "", AuthMode authMode = AuthMode::Basic);
 
   /**
+   * Like fetchUrl(onData,...) but also reports the final HTTP status code via
+   * outStatus (set to 0 if the request never got a response). Lets callers tell
+   * a real 404/401 apart from a transport/heap failure.
+   */
+  static bool fetchUrlWithStatus(const std::string& url, const DataCallback& onData, int& outStatus,
+                                 const std::string& username = "", const std::string& password = "",
+                                 AuthMode authMode = AuthMode::Basic);
+
+  /**
    * Download a file to the SD card with optional credentials.
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,

@@ -173,6 +173,7 @@ struct Sink {
   size_t downloaded = 0;
   size_t total = 0;
   bool rangeIgnored = false;
+  int* statusOut = nullptr;  // if set, receives the final HTTP status code
 };
 
 void setRequestHeaders(esp_http_client_handle_t client, const std::string& username, const std::string& password,
@@ -266,6 +267,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 
     int64_t responseLength = esp_http_client_fetch_headers(client);
     const int status = esp_http_client_get_status_code(client);
+    if (sink.statusOut) *sink.statusOut = status;
     if (responseLength < 0) {
       LOG_ERR("HTTP", "Fetch headers failed: %lld", static_cast<long long>(responseLength));
       logNetworkState("Fetch headers failure");
@@ -447,6 +449,25 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 
   Sink sink;
   sink.write = onData;
+  return runGet(url, username, password, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE, authMode) == OK;
+}
+
+bool HttpDownloader::fetchUrlWithStatus(const std::string& url, const DataCallback& onData, int& outStatus,
+                                        const std::string& username, const std::string& password,
+                                        AuthMode authMode) {
+  WifiPowerSaveGuard wifiPowerSaveGuard;
+  (void)wifiPowerSaveGuard;
+
+  outStatus = 0;
+  LOG_DBG("HTTP", "Fetching (status): %s", url.c_str());
+  if (!onData) {
+    LOG_ERR("HTTP", "Fetch failed: missing data callback");
+    return false;
+  }
+
+  Sink sink;
+  sink.write = onData;
+  sink.statusOut = &outStatus;
   return runGet(url, username, password, sink, DEFAULT_DOWNLOAD_BUFFER_SIZE, authMode) == OK;
 }
 

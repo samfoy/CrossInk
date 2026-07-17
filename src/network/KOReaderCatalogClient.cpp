@@ -1,7 +1,9 @@
 #include "KOReaderCatalogClient.h"
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <Logging.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -57,15 +59,27 @@ std::string KOReaderCatalogClient::thumbnailUrl(int bookId) {
 KOReaderCatalogClient::Error KOReaderCatalogClient::httpGetJson(const std::string& url, std::string& outBody) {
   if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
   outBody.clear();
-  const bool ok = HttpDownloader::fetchUrl(url, outBody, KOREADER_STORE.getUsername(),
-                                           KOREADER_STORE.getMd5Password(),
-                                           HttpDownloader::AuthMode::KosyncHeader);
-  if (!ok) {
-    // fetchUrl collapses non-200 (incl. 404 for plain kosync) into a failure.
-    // We can't see the code here, so classify empty body as unavailable/network.
-    return outBody.empty() ? UNAVAILABLE : NETWORK_ERROR;
-  }
-  return OK;
+
+  LOG_DBG("BOCAT", "GET %s (freeHeap=%u)", url.c_str(), ESP.getFreeHeap());
+  int status = 0;
+  const bool ok = HttpDownloader::fetchUrlWithStatus(
+      url,
+      [&outBody](const uint8_t* data, size_t len) {
+        outBody.append(reinterpret_cast<const char*>(data), len);
+        return true;
+      },
+      status, KOREADER_STORE.getUsername(), KOREADER_STORE.getMd5Password(),
+      HttpDownloader::AuthMode::KosyncHeader);
+
+  LOG_DBG("BOCAT", "GET done: ok=%d status=%d bytes=%u freeHeap=%u", ok ? 1 : 0, status,
+          static_cast<unsigned>(outBody.size()), ESP.getFreeHeap());
+
+  if (ok) return OK;
+  // Classify the failure from the real HTTP status so the UI can distinguish a
+  // genuine "no catalog" (404) from auth/transport/heap problems.
+  if (status == 404 || status == 405 || status == 501) return UNAVAILABLE;
+  if (status == 401 || status == 403) return NO_CREDENTIALS;
+  return NETWORK_ERROR;  // status 0 = never connected / TLS / heap; 5xx = server
 }
 
 KOReaderCatalogClient::Error KOReaderCatalogClient::fetchContinueReading(std::vector<BookOrbitCatalogItem>& out) {
@@ -97,7 +111,9 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::fetchBooks(const std::string
   out.total = 0;
   out.hasNext = false;
 
-  std::string url = catalogBase() + "/books?sort=" + sort + "&page=" + std::to_string(page);
+  // size=10 keeps the JSON small enough to parse on the C3's tight heap
+  // (a full page of 20 is ~8.6 KB; ArduinoJson needs ~2-3x that to parse).
+  std::string url = catalogBase() + "/books?sort=" + sort + "&page=" + std::to_string(page) + "&size=10";
   std::string body;
   const Error e = httpGetJson(url, body);
   if (e != OK) return e;
