@@ -45,7 +45,10 @@ std::string catalogErr(KOReaderCatalogClient::Error e) {
 
 void BookOrbitCatalogActivity::onEnter() {
   Activity::onEnter();
-  sdFontSystem.releaseLoadedFont(renderer);
+  // Free as much heap as possible before the TLS handshake — the C3's heap dips
+  // to a few KB mid-handshake, so match the kosync activity and drop the SD font
+  // registry too (not just the loaded font).
+  sdFontSystem.releaseForNetwork(renderer);
 
   state = State::CHECK_WIFI;
   selectorIndex = 0;

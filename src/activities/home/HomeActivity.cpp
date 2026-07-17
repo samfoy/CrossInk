@@ -598,6 +598,9 @@ int HomeActivity::getMenuItemCount() const {
   if (hasOpdsServers) {
     count++;
   }
+  if (KOREADER_STORE.hasCredentials()) {
+    count++;  // BookOrbit Library menu item
+  }
   if (hasReadingStats) {
     count++;
   }

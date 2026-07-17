@@ -20,15 +20,14 @@
 namespace {
 constexpr size_t PROGRESS_UPDATE_BYTES = 64 * 1024;
 constexpr uint32_t PROGRESS_UPDATE_MS = 250;
-// TLS record buffer for esp_http_client. Allocated during the TLS handshake
-// (the peak-memory moment, ~50 KB free on the C3). HTTPS is the only download
-// path for a remote X3 (samfp.tech via Caddy), so this buffer directly governs
-// real-world download throughput — worth 8 KB (2x the old 4 KB) to cut the
-// fragmented-decrypt penalty. Kept below the handshake OOM cliff; the free-heap
-// logging in runGet() lets us confirm headroom on real hardware. If a device
-// ever OOMs here, drop to 6144.
-constexpr int HTTP_RX_BUF = 8192;
-constexpr int HTTP_TX_BUF = 2048;
+// TLS record buffer for esp_http_client. Allocated during the TLS handshake,
+// the PEAK-memory moment on the C3 (hardware logs showed free heap dropping to
+// ~5.7 KB mid-handshake with the CA bundle + mbedTLS session). A larger buffer
+// here makes that peak worse and caused post-handshake read-buffer allocs to
+// fail. Keep it at the stock 4 KB — download throughput is secondary to the
+// request succeeding at all on this tiny, fragmentation-prone heap.
+constexpr int HTTP_RX_BUF = 4096;
+constexpr int HTTP_TX_BUF = 1024;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr int HTTP_READ_POLL_TIMEOUT_MS = 5000;
 constexpr uint32_t DOWNLOAD_IDLE_TIMEOUT_MS = 30000;
