@@ -289,18 +289,19 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
         }
         // Throttle e-ink repaints: a full refresh is ~380 ms, so repainting every
         // 4 KB chunk would make the download take minutes of screen time alone.
-        // Only repaint when the whole-percent changes AND at most ~1/sec.
+        // Repaint on whole-percent change when total is known, else time-based
+        // (unknown total -> pct stays -1, so fall back to ~1/sec by bytes).
         const int pct = total > 0 ? static_cast<int>((downloaded * 100) / total) : -1;
         const uint32_t now = millis();
-        if (self->cancelRequested || pct != self->lastDownloadPct) {
-          if (self->cancelRequested || now - self->lastDownloadPaintMs > 1000) {
-            self->lastDownloadPaintMs = now;
-            self->lastDownloadPct = pct;
-            self->requestUpdate(true);
-          }
+        const bool pctChanged = (pct != self->lastDownloadPct);
+        const bool timeElapsed = (now - self->lastDownloadPaintMs > 1000);
+        if (self->cancelRequested || (pct >= 0 && pctChanged && timeElapsed) || (pct < 0 && timeElapsed)) {
+          self->lastDownloadPaintMs = now;
+          self->lastDownloadPct = pct;
+          self->requestUpdate(true);
         }
       },
-      this, &cancelRequested);
+      this, &cancelRequested, detail.primarySizeBytes);
 
   if (result == KOReaderCatalogClient::OK) {
     clearBookCache(dest);

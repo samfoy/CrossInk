@@ -102,10 +102,12 @@ class KOReaderCatalogClient {
   // WiFiClientSecure stack as kosync (no CA bundle -> fits the C3 heap; the
   // esp_http_client path can't do insecure TLS without a build flag). onProgress
   // is called with (downloaded, total) bytes; cancelFlag (if non-null) aborts
-  // when it becomes true. Returns OK on a complete download.
+  // when it becomes true. knownTotal (>0) is used as the progress total when the
+  // server sends no Content-Length (BookOrbit streams without one). Returns OK on
+  // a complete download.
   static Error downloadFile(int fileId, const std::string& destPath,
                             void (*onProgress)(size_t, size_t, void*) = nullptr, void* progressCtx = nullptr,
-                            const bool* cancelFlag = nullptr);
+                            const bool* cancelFlag = nullptr, long knownTotal = 0);
 
   static const char* errorString(Error e);
 

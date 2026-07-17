@@ -287,7 +287,8 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::setReadStatus(int bookId, co
 
 KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, const std::string& destPath,
                                                                  void (*onProgress)(size_t, size_t, void*),
-                                                                 void* progressCtx, const bool* cancelFlag) {
+                                                                 void* progressCtx, const bool* cancelFlag,
+                                                                 long knownTotal) {
   if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
 
   const std::string url = downloadUrl(fileId);
@@ -316,7 +317,12 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
     return NETWORK_ERROR;
   }
 
-  const int total = http.getSize();  // may be -1 if chunked
+  const int httpTotal = http.getSize();  // -1 when the server streams w/o Content-Length
+  // Loop/termination is driven ONLY by httpTotal (authoritative). knownTotal is a
+  // best-effort figure from book detail used purely for the progress display, so a
+  // stale size can't truncate or hang the actual download.
+  const size_t progressTotal = httpTotal > 0 ? static_cast<size_t>(httpTotal)
+                                             : (knownTotal > 0 ? static_cast<size_t>(knownTotal) : 0);
 
   // Make sure the destination directory exists (e.g. /books) — openFileForWrite
   // does not create parent dirs, and a fresh SD card may not have /books yet.
@@ -348,7 +354,7 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
     } else {
       size_t downloaded = 0;
       uint32_t lastData = millis();
-      while (http.connected() && (total < 0 || downloaded < static_cast<size_t>(total))) {
+      while (http.connected() && (httpTotal < 0 || downloaded < static_cast<size_t>(httpTotal))) {
         if (cancelFlag && *cancelFlag) {
           result = NETWORK_ERROR;
           break;
@@ -376,13 +382,16 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
         }
         downloaded += static_cast<size_t>(n);
         lastData = millis();
-        if (onProgress) onProgress(downloaded, total > 0 ? static_cast<size_t>(total) : 0, progressCtx);
+        // Report the larger of progressTotal / downloaded so a slightly-off
+        // knownTotal never shows >100% or a shrinking bar.
+        const size_t shownTotal = downloaded > progressTotal ? downloaded : progressTotal;
+        if (onProgress) onProgress(downloaded, shownTotal, progressCtx);
       }
-      if (result == OK && total > 0 && downloaded < static_cast<size_t>(total)) {
+      if (result == OK && httpTotal > 0 && downloaded < static_cast<size_t>(httpTotal)) {
         result = NETWORK_ERROR;  // truncated
       }
-      LOG_DBG("BOCAT", "download done: %u/%d bytes result=%d freeHeap=%u", static_cast<unsigned>(downloaded), total,
-              static_cast<int>(result), ESP.getFreeHeap());
+      LOG_DBG("BOCAT", "download done: %u bytes (httpTotal=%d) result=%d freeHeap=%u",
+              static_cast<unsigned>(downloaded), httpTotal, static_cast<int>(result), ESP.getFreeHeap());
     }
   }
 #else
