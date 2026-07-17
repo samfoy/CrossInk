@@ -9,8 +9,58 @@
 
 #include "KOReaderCredentialStore.h"
 #include "network/HttpDownloader.h"
+#include "network/WifiPowerSaveGuard.h"
+
+#ifndef SIMULATOR
+#include <Stream.h>
+#endif
 
 namespace {
+
+#ifndef SIMULATOR
+// A Stream that writes everything it receives to a HalFile, tracking the byte
+// count and firing a progress callback. Used with HTTPClient::writeToStream(),
+// which performs proper chunked-transfer decoding (BookOrbit sends the file
+// with Transfer-Encoding: chunked, so reading the raw socket would inject
+// chunk-framing bytes and corrupt the EPUB). Read side is unused (no-op).
+class FileSinkStream : public Stream {
+ public:
+  FileSinkStream(HalFile& file, size_t displayTotal, void (*onProgress)(size_t, size_t, void*), void* ctx,
+                 const bool* cancelFlag)
+      : file_(file), displayTotal_(displayTotal), onProgress_(onProgress), ctx_(ctx), cancelFlag_(cancelFlag) {}
+
+  size_t write(uint8_t b) override { return write(&b, 1); }
+  size_t write(const uint8_t* buf, size_t size) override {
+    if (writeFailed_ || (cancelFlag_ && *cancelFlag_)) return 0;  // abort the transfer
+    const size_t w = file_.write(buf, size);
+    if (w != size) {
+      writeFailed_ = true;
+      return w;
+    }
+    written_ += size;
+    const size_t shown = written_ > displayTotal_ ? written_ : displayTotal_;
+    if (onProgress_) onProgress_(written_, shown, ctx_);
+    return size;
+  }
+
+  // Stream read interface — unused by writeToStream(); provide inert impls.
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+
+  size_t written() const { return written_; }
+  bool failed() const { return writeFailed_; }
+
+ private:
+  HalFile& file_;
+  size_t displayTotal_ = 0;
+  void (*onProgress_)(size_t, size_t, void*) = nullptr;
+  void* ctx_ = nullptr;
+  const bool* cancelFlag_ = nullptr;
+  size_t written_ = 0;
+  bool writeFailed_ = false;
+};
+#endif
 
 // The catalog lives under the kosync base URL (which already ends in
 // /api/v1/koreader), e.g. https://samfp.tech/books/api/v1/koreader/plugin/catalog.
@@ -61,6 +111,10 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::httpGetJson(const std::strin
   outBody.clear();
 
   LOG_DBG("BOCAT", "GET %s (freeHeap=%u)", url.c_str(), ESP.getFreeHeap());
+
+  // Disable WiFi modem power-save during the fetch for lower latency.
+  WifiPowerSaveGuard wifiPowerSaveGuard;
+  (void)wifiPowerSaveGuard;
 
   // Use the same TLS path as the working kosync client: WiFiClientSecure with
   // setInsecure() (skip cert verification). This deliberately avoids
@@ -294,6 +348,11 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
   const std::string url = downloadUrl(fileId);
   LOG_DBG("BOCAT", "download fileId=%d -> %s (freeHeap=%u)", fileId, destPath.c_str(), ESP.getFreeHeap());
 
+  // Disable WiFi modem power-save for the duration — it otherwise adds ~100-200ms
+  // latency per round-trip and badly throttles throughput. Big speed win.
+  WifiPowerSaveGuard wifiPowerSaveGuard;
+  (void)wifiPowerSaveGuard;
+
   const bool https = url.rfind("https://", 0) == 0;
   HTTPClient http;
   std::unique_ptr<WiFiClientSecure> secureClient;
@@ -307,6 +366,7 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
   }
   http.addHeader("x-auth-user", KOREADER_STORE.getUsername().c_str());
   http.addHeader("x-auth-key", KOREADER_STORE.getMd5Password().c_str());
+  http.setTimeout(20000);  // per-read timeout for writeToStream's chunk reads
 
   const int code = http.GET();
   if (code != 200) {
@@ -341,58 +401,21 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
 
   Error result = OK;
 #ifndef SIMULATOR
-  NetworkClient* stream = http.getStreamPtr();
-  if (!stream) {
-    result = NETWORK_ERROR;
-  } else {
-    // Stream to SD in small chunks — an 8 KB stack/heap buffer keeps peak memory
-    // low (the body never fully resides in RAM).
-    static constexpr size_t CHUNK = 4096;
-    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[CHUNK]);
-    if (!buf) {
+  {
+    // Let HTTPClient drive the transfer so it decodes chunked encoding correctly
+    // (raw socket reads would inject chunk-framing bytes and corrupt the EPUB).
+    FileSinkStream sink(file, progressTotal, onProgress, progressCtx, cancelFlag);
+    const int written = http.writeToStream(&sink);
+    if (sink.failed()) {
+      result = NETWORK_ERROR;  // SD write error or cancelled mid-stream
+    } else if (cancelFlag && *cancelFlag) {
       result = NETWORK_ERROR;
-    } else {
-      size_t downloaded = 0;
-      uint32_t lastData = millis();
-      while (http.connected() && (httpTotal < 0 || downloaded < static_cast<size_t>(httpTotal))) {
-        if (cancelFlag && *cancelFlag) {
-          result = NETWORK_ERROR;
-          break;
-        }
-        const size_t avail = stream->available();
-        if (avail == 0) {
-          if (millis() - lastData > 30000) {  // 30s idle timeout
-            LOG_ERR("BOCAT", "download stalled at %u bytes", static_cast<unsigned>(downloaded));
-            result = NETWORK_ERROR;
-            break;
-          }
-          delay(5);
-          continue;
-        }
-        const size_t toRead = avail < CHUNK ? avail : CHUNK;
-        const int n = stream->readBytes(buf.get(), toRead);
-        if (n <= 0) {
-          delay(5);
-          continue;
-        }
-        if (file.write(buf.get(), static_cast<size_t>(n)) != static_cast<size_t>(n)) {
-          LOG_ERR("BOCAT", "SD write failed at %u bytes", static_cast<unsigned>(downloaded));
-          result = NETWORK_ERROR;
-          break;
-        }
-        downloaded += static_cast<size_t>(n);
-        lastData = millis();
-        // Report the larger of progressTotal / downloaded so a slightly-off
-        // knownTotal never shows >100% or a shrinking bar.
-        const size_t shownTotal = downloaded > progressTotal ? downloaded : progressTotal;
-        if (onProgress) onProgress(downloaded, shownTotal, progressCtx);
-      }
-      if (result == OK && httpTotal > 0 && downloaded < static_cast<size_t>(httpTotal)) {
-        result = NETWORK_ERROR;  // truncated
-      }
-      LOG_DBG("BOCAT", "download done: %u bytes (httpTotal=%d) result=%d freeHeap=%u",
-              static_cast<unsigned>(downloaded), httpTotal, static_cast<int>(result), ESP.getFreeHeap());
+    } else if (written < 0) {
+      LOG_ERR("BOCAT", "writeToStream error %d at %u bytes", written, static_cast<unsigned>(sink.written()));
+      result = NETWORK_ERROR;
     }
+    LOG_DBG("BOCAT", "download done: %u bytes (httpTotal=%d writeRet=%d) result=%d freeHeap=%u",
+            static_cast<unsigned>(sink.written()), httpTotal, written, static_cast<int>(result), ESP.getFreeHeap());
   }
 #else
   // Simulator: mock HTTPClient has no getStreamPtr; just write the buffered body.

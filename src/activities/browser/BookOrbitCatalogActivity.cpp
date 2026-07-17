@@ -395,11 +395,14 @@ void BookOrbitCatalogActivity::render(RenderLock&&) {
     if (downloadTotal > 0) {
       GUI.drawProgressBar(renderer, Rect{50, pageHeight / 2 + 20, pageWidth - 100, 20}, downloadProgress,
                           downloadTotal);
-      char pctLine[48];
+      char pctLine[16];
+      char kbLine[32];
       const int pct = static_cast<int>((downloadProgress * 100) / downloadTotal);
-      snprintf(pctLine, sizeof(pctLine), "%d%%  (%u / %u KB)", pct,
-               static_cast<unsigned>(downloadProgress / 1024), static_cast<unsigned>(downloadTotal / 1024));
+      snprintf(pctLine, sizeof(pctLine), "%d%%", pct);
+      snprintf(kbLine, sizeof(kbLine), "%u / %u KB", static_cast<unsigned>(downloadProgress / 1024),
+               static_cast<unsigned>(downloadTotal / 1024));
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 55, pctLine);
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 80, kbLine);
     } else if (downloadProgress > 0) {
       // Unknown total (chunked): show bytes received so the user sees motion.
       char bytesLine[32];
