@@ -83,6 +83,15 @@ class KOReaderCatalogClient {
   // Mark-as-Finished sync gap). status in {reading, finished, abandoned}.
   static Error setReadStatus(int bookId, const std::string& status);
 
+  // Download a book file to destPath on the SD card, using the same insecure-TLS
+  // WiFiClientSecure stack as kosync (no CA bundle -> fits the C3 heap; the
+  // esp_http_client path can't do insecure TLS without a build flag). onProgress
+  // is called with (downloaded, total) bytes; cancelFlag (if non-null) aborts
+  // when it becomes true. Returns OK on a complete download.
+  static Error downloadFile(int fileId, const std::string& destPath,
+                            void (*onProgress)(size_t, size_t, void*) = nullptr, void* progressCtx = nullptr,
+                            const bool* cancelFlag = nullptr);
+
   static const char* errorString(Error e);
 
  private:

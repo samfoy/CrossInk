@@ -19,11 +19,6 @@
 namespace {
 constexpr int PAGE_ITEMS = 23;
 constexpr int SECTION_COUNT = 2;  // Continue Reading, All Books
-// Read buffer for book downloads. Allocated right after the TLS handshake when
-// the C3 heap is fragmented (hardware log showed ~34 KB max contiguous alloc
-// even with ~78 KB free), so keep it modest — 8 KB streams fine and allocates
-// reliably. The body streams to SD, so this is only the per-read chunk size.
-constexpr size_t CATALOG_DOWNLOAD_BUFFER_SIZE = 8192;
 
 std::string sectionTitle(int idx) {
   return idx == 0 ? std::string(tr(STR_CONTINUE_READING)) : std::string(tr(STR_ALL_BOOKS));
@@ -258,40 +253,32 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
   cancelRequested = false;
   requestUpdate(true);
 
-  const std::string url = KOReaderCatalogClient::downloadUrl(detail.primaryFileId);
   const std::string dest = destPathForDetail();
-  LOG_DBG("BOCAT", "Downloading fileId=%d -> %s", detail.primaryFileId, dest.c_str());
 
-  auto pollCancel = [this] {
-    if (cancelRequested) return true;
-    mappedInput.update();
-    if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
-        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      cancelRequested = true;
-    }
-    return cancelRequested;
-  };
-
-  HttpDownloader::DownloadOptions opts;
-  opts.shouldCancel = pollCancel;
-  opts.bufferSize = CATALOG_DOWNLOAD_BUFFER_SIZE;
-  opts.authMode = HttpDownloader::AuthMode::KosyncHeader;
-  opts.insecureTls = true;  // skip CA bundle to survive the C3's tight TLS heap
-
-  const auto result = HttpDownloader::downloadToFile(
-      url, dest,
-      [this](const size_t downloaded, const size_t total) {
-        downloadProgress = downloaded;
-        downloadTotal = total;
-        requestUpdate(true);
+  // Download via the catalog client's insecure-TLS path (WiFiClientSecure +
+  // setInsecure), the same stack kosync uses — the esp_http_client/HttpDownloader
+  // path can't do insecure TLS and OOMs loading the CA bundle on the C3.
+  const auto result = KOReaderCatalogClient::downloadFile(
+      detail.primaryFileId, dest,
+      [](size_t downloaded, size_t total, void* ctx) {
+        auto* self = static_cast<BookOrbitCatalogActivity*>(ctx);
+        self->downloadProgress = downloaded;
+        self->downloadTotal = total;
+        // Poll Back to allow cancel, and repaint the progress bar.
+        self->mappedInput.update();
+        if (self->mappedInput.isPressed(MappedInputManager::Button::Back) ||
+            self->mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+          self->cancelRequested = true;
+        }
+        self->requestUpdate(true);
       },
-      &cancelRequested, KOREADER_STORE.getUsername(), KOREADER_STORE.getMd5Password(), opts);
+      this, &cancelRequested);
 
-  if (result == HttpDownloader::OK) {
+  if (result == KOReaderCatalogClient::OK) {
     clearBookCache(dest);
     downloadedPath = dest;
     state = State::DETAIL;
-  } else if (result == HttpDownloader::ABORTED) {
+  } else if (cancelRequested) {
     mappedInput.suppressNextBackRelease();
     state = State::DETAIL;
   } else {

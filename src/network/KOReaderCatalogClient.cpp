@@ -261,6 +261,115 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::setReadStatus(int bookId, co
   return NETWORK_ERROR;
 }
 
+KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, const std::string& destPath,
+                                                                 void (*onProgress)(size_t, size_t, void*),
+                                                                 void* progressCtx, const bool* cancelFlag) {
+  if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
+
+  const std::string url = downloadUrl(fileId);
+  LOG_DBG("BOCAT", "download fileId=%d -> %s (freeHeap=%u)", fileId, destPath.c_str(), ESP.getFreeHeap());
+
+  const bool https = url.rfind("https://", 0) == 0;
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+  if (https) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();  // no CA bundle: same as kosync, fits C3 heap
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
+  }
+  http.addHeader("x-auth-user", KOREADER_STORE.getUsername().c_str());
+  http.addHeader("x-auth-key", KOREADER_STORE.getMd5Password().c_str());
+
+  const int code = http.GET();
+  if (code != 200) {
+    http.end();
+    LOG_ERR("BOCAT", "download HTTP %d", code);
+    if (code == 404 || code == 405) return UNAVAILABLE;
+    if (code == 401 || code == 403) return NO_CREDENTIALS;
+    return NETWORK_ERROR;
+  }
+
+  const int total = http.getSize();  // may be -1 if chunked
+  HalFile file;
+  if (!Storage.openFileForWrite("BOCAT", destPath, file)) {
+    http.end();
+    LOG_ERR("BOCAT", "cannot open %s for write", destPath.c_str());
+    return NETWORK_ERROR;
+  }
+
+  Error result = OK;
+#ifndef SIMULATOR
+  NetworkClient* stream = http.getStreamPtr();
+  if (!stream) {
+    result = NETWORK_ERROR;
+  } else {
+    // Stream to SD in small chunks — an 8 KB stack/heap buffer keeps peak memory
+    // low (the body never fully resides in RAM).
+    static constexpr size_t CHUNK = 4096;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[CHUNK]);
+    if (!buf) {
+      result = NETWORK_ERROR;
+    } else {
+      size_t downloaded = 0;
+      uint32_t lastData = millis();
+      while (http.connected() && (total < 0 || downloaded < static_cast<size_t>(total))) {
+        if (cancelFlag && *cancelFlag) {
+          result = NETWORK_ERROR;
+          break;
+        }
+        const size_t avail = stream->available();
+        if (avail == 0) {
+          if (millis() - lastData > 30000) {  // 30s idle timeout
+            LOG_ERR("BOCAT", "download stalled at %u bytes", static_cast<unsigned>(downloaded));
+            result = NETWORK_ERROR;
+            break;
+          }
+          delay(5);
+          continue;
+        }
+        const size_t toRead = avail < CHUNK ? avail : CHUNK;
+        const int n = stream->readBytes(buf.get(), toRead);
+        if (n <= 0) {
+          delay(5);
+          continue;
+        }
+        if (file.write(buf.get(), static_cast<size_t>(n)) != static_cast<size_t>(n)) {
+          LOG_ERR("BOCAT", "SD write failed at %u bytes", static_cast<unsigned>(downloaded));
+          result = NETWORK_ERROR;
+          break;
+        }
+        downloaded += static_cast<size_t>(n);
+        lastData = millis();
+        if (onProgress) onProgress(downloaded, total > 0 ? static_cast<size_t>(total) : 0, progressCtx);
+      }
+      if (result == OK && total > 0 && downloaded < static_cast<size_t>(total)) {
+        result = NETWORK_ERROR;  // truncated
+      }
+      LOG_DBG("BOCAT", "download done: %u/%d bytes result=%d freeHeap=%u", static_cast<unsigned>(downloaded), total,
+              static_cast<int>(result), ESP.getFreeHeap());
+    }
+  }
+#else
+  // Simulator: mock HTTPClient has no getStreamPtr; just write the buffered body.
+  {
+    const String body = http.getString();
+    if (body.length() > 0) file.write(reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+    if (onProgress) onProgress(body.length(), body.length(), progressCtx);
+  }
+#endif
+
+  file.close();
+  http.end();
+
+  if (result != OK) {
+    Storage.remove(destPath.c_str());  // don't leave a partial/corrupt file
+  }
+  return result;
+}
+
 const char* KOReaderCatalogClient::errorString(Error e) {
   switch (e) {
     case OK:
