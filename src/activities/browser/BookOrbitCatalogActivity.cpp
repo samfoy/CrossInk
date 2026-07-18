@@ -364,11 +364,9 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
   statusMessage = detail.title;
   downloadProgress = downloadTotal = 0;
   cancelRequested = false;
-  // Render the "Downloading..." screen ONCE, synchronously, and wait for it to
-  // finish BEFORE starting the transfer. Rendering runs on a separate task and
-  // allocates framebuffer memory; if it runs concurrently with the download it
-  // fragments the heap and HTTPClient's per-chunk malloc fails (error -8,
-  // TOO_LESS_RAM, ~39 KB in). So we do zero renders during writeToStream.
+  lastPaintPct = -1;
+  lastPaintMs = 0;
+  // Render the "Downloading..." screen once before the transfer starts.
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) requestUpdate(true);
 
   const std::string dest = destPathForDetail();
@@ -382,13 +380,24 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
         auto* self = static_cast<BookOrbitCatalogActivity*>(ctx);
         self->downloadProgress = downloaded;
         self->downloadTotal = total;
-        // Only poll for cancel here — deliberately NO requestUpdate(). Triggering
-        // an e-ink render mid-transfer races HTTPClient's malloc and OOMs the C3.
-        // Progress numbers are captured; the screen repaints once on completion.
         self->mappedInput.update();
         if (self->mappedInput.isPressed(MappedInputManager::Button::Back) ||
             self->mappedInput.wasReleased(MappedInputManager::Button::Back)) {
           self->cancelRequested = true;
+        }
+        // Live progress bar. Repaint via requestUpdateAndWait() which BLOCKS this
+        // (download) task while the render task draws — so the render never runs
+        // *concurrently* with an HTTP allocation (that concurrency was the -8
+        // TOO_LESS_RAM OOM). Throttle to whole-percent changes, min ~700 ms apart,
+        // so a multi-MB book isn't dominated by ~380 ms e-ink refreshes.
+        const int pct = total > 0 ? static_cast<int>((downloaded * 100) / total) : -1;
+        const uint32_t now = millis();
+        const bool pctChanged = (pct != self->lastPaintPct);
+        const bool dueByTime = (now - self->lastPaintMs) >= 700;
+        if (self->cancelRequested || ((pctChanged || pct < 0) && dueByTime)) {
+          self->lastPaintPct = pct;
+          self->lastPaintMs = now;
+          self->requestUpdateAndWait();
         }
       },
       this, &cancelRequested, detail.primarySizeBytes);

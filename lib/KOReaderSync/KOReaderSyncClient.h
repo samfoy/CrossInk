@@ -112,6 +112,34 @@ class KOReaderSyncClient {
   static Error uploadAnnotations(const std::string& deviceModel, const std::string& documentHash,
                                  const std::vector<AnnotationUpload>& annotations, const std::string& deviceTime = "");
 
+  /** One server annotation pushed down by the exchange endpoint. */
+  struct AnnotationDownload {
+    int serverId = 0;
+    int version = 0;
+    std::string text;
+    std::string note;
+    std::string chapter;
+    int pageno = -1;
+  };
+
+  /**
+   * Bidirectional annotation exchange for one book (POST /plugin/annotations/
+   * exchange). Phase 2 is pull-oriented: we send an empty device key-set and
+   * collect the server's `toApply.add` entries into `outAdds`. `outMore` is set
+   * when the server has more to send (call again). documentHash is the 32-hex id.
+   * @return OK on success (2xx), NOT_FOUND if unsupported, error otherwise.
+   */
+  static Error exchangeAnnotations(const std::string& deviceModel, const std::string& documentHash,
+                                   std::vector<AnnotationDownload>& outAdds, bool& outMore,
+                                   const std::string& deviceTime = "");
+
+  /**
+   * Acknowledge applied server annotations (POST /plugin/annotations/exchange-ack)
+   * so the server advances its per-device sync cursor and stops re-pushing them.
+   */
+  static Error ackAnnotations(const std::string& deviceModel, const std::string& documentHash,
+                              const std::vector<AnnotationDownload>& applied, const std::string& deviceTime = "");
+
   /**
    * Get human-readable error message.
    */

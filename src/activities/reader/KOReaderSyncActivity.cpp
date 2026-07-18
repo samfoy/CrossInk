@@ -14,6 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "ClippingStore.h"
+#include "clippings/ClippingsManager.h"
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
@@ -103,6 +104,7 @@ void KOReaderSyncActivity::saveProgressAndReturn(const CrossPointPosition& posit
   // while WiFi is still up (onExit -> silent reboot tears the radio down).
   uploadPageStats();
   uploadAnnotations();
+  downloadAnnotations();
   returnToReader();
 }
 
@@ -333,6 +335,7 @@ void KOReaderSyncActivity::performUpload() {
   if (result == KOReaderSyncClient::OK) {
     uploadPageStats();
     uploadAnnotations();
+    downloadAnnotations();
   }
 
   // Drop the radio while user reads the result; full teardown happens at silent reboot.
@@ -466,6 +469,102 @@ void KOReaderSyncActivity::uploadAnnotations() {
   } else {
     LOG_DBG("KOSync", "Annotation upload failed (err=%d, http=%d)", static_cast<int>(res),
             KOReaderSyncClient::lastHttpCode);
+  }
+}
+
+void KOReaderSyncActivity::downloadAnnotations() {
+  if (!SETTINGS.shouldUploadReadingStats()) return;  // same opt-in as upload
+  if (documentHash.size() != 32) return;
+
+  // Track which server annotations we've already merged, one serverId per line,
+  // so re-syncs don't append duplicates into the clippings file.
+  const std::string cursorDir = "/.crosspoint/annot_synced";
+  const std::string cursorPath = cursorDir + "/" + documentHash + ".txt";
+  std::string appliedSet;  // newline-delimited serverIds already merged
+  {
+    HalFile f;
+    if (Storage.openFileForRead("KOAnnot", cursorPath, f)) {
+      char buf[256];
+      int n;
+      while ((n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf))) > 0) appliedSet.append(buf, n);
+      f.close();
+    }
+  }
+  auto alreadyApplied = [&](int serverId) {
+    const std::string needle = "\n" + std::to_string(serverId) + "\n";
+    const std::string hay = "\n" + appliedSet + "\n";
+    return hay.find(needle) != std::string::npos;
+  };
+
+  const std::string model = SETTINGS.getEffectiveDeviceName();
+  std::string deviceTime;
+  ReadingStatsDateTime dtNow;
+  if (getCurrentLocalReadingStatsDateTime(dtNow) && dtNow.isValid()) {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u", dtNow.date.year, dtNow.date.month, dtNow.date.day,
+             dtNow.hour, dtNow.minute, dtNow.second);
+    deviceTime = buf;
+  }
+
+  // A book label for the clippings file. Reuse the existing clipping store's
+  // recorded title/author for this book if present; else fall back to filename.
+  std::string title = epubPath;
+  std::string author;
+  {
+    std::vector<ClippedBookEntry> books;
+    if (ClippingStore::getAllClippedBooks(books)) {
+      for (const auto& b : books) {
+        if (b.bookPath == epubPath) {
+          title = b.bookTitle.empty() ? title : b.bookTitle;
+          author = b.bookAuthor;
+          break;
+        }
+      }
+    }
+  }
+
+  int pulls = 0;
+  bool more = true;
+  std::vector<KOReaderSyncClient::AnnotationDownload> newlyApplied;
+  // Bounded loop: the server paginates via `more`; cap iterations defensively.
+  while (more && pulls < 20) {
+    pulls++;
+    std::vector<KOReaderSyncClient::AnnotationDownload> adds;
+    const auto res = KOReaderSyncClient::exchangeAnnotations(model, documentHash, adds, more, deviceTime);
+    if (res == KOReaderSyncClient::NOT_FOUND) {
+      LOG_INF("KOSync", "Server has no annotation-exchange endpoint; skipping");
+      return;
+    }
+    if (res != KOReaderSyncClient::OK) {
+      LOG_DBG("KOSync", "Annotation exchange failed (err=%d, http=%d)", static_cast<int>(res),
+              KOReaderSyncClient::lastHttpCode);
+      return;
+    }
+    if (adds.empty()) break;
+    for (const auto& a : adds) {
+      if (alreadyApplied(a.serverId)) continue;
+      // Merge into the on-device clippings file. CrossInk can't re-anchor the
+      // server's DOM xpointer, but page + text + chapter + note are readable.
+      std::string text = a.text;
+      if (!a.note.empty()) text += "\n[note] " + a.note;
+      const int page = a.pageno >= 0 ? a.pageno : 0;
+      if (ClippingsManager::saveClipping(title, author, a.chapter, page, text)) {
+        appliedSet += std::to_string(a.serverId) + "\n";
+        newlyApplied.push_back(a);
+      }
+    }
+  }
+
+  if (!newlyApplied.empty()) {
+    // Persist the cursor and ack the server so it advances its per-device cursor.
+    Storage.ensureDirectoryExists(cursorDir.c_str());
+    HalFile f;
+    if (Storage.openFileForWrite("KOAnnot", cursorPath, f)) {
+      f.write(reinterpret_cast<const uint8_t*>(appliedSet.data()), appliedSet.size());
+      f.close();
+    }
+    KOReaderSyncClient::ackAnnotations(model, documentHash, newlyApplied, deviceTime);
+    LOG_INF("KOSync", "Merged %u server annotations into clippings", (unsigned)newlyApplied.size());
   }
 }
 

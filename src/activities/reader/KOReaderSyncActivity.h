@@ -95,6 +95,7 @@ class KOReaderSyncActivity final : public Activity {
   // Best effort; must be called while WiFi is still connected.
   void uploadPageStats();
   void uploadAnnotations();
+  void downloadAnnotations();
   bool consumeInitialConfirmRelease();
   void ensureEpubLoaded();
   void saveProgressAndReturn(const CrossPointPosition& position);

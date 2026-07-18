@@ -16,6 +16,8 @@
 #include <esp_http_client.h>
 #endif
 
+#include <HwSim.h>
+
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -229,6 +231,7 @@ int doJsonPost(const std::string& url, const std::string& body, int& outHttpCode
   outHttpCode = 0;
   outTransportErr = 0;
 #ifdef SIMULATOR
+  hwsim::TlsHandshakeScope tlsScope;  // model the mid-handshake heap trough
   HTTPClient http;
   std::unique_ptr<WiFiClientSecure> secureClient;
   WiFiClient plainClient;
@@ -271,6 +274,56 @@ int doJsonPost(const std::string& url, const std::string& body, int& outHttpCode
   return (err != ESP_OK) ? -1 : httpCode;
 #endif
 }
+
+// Like doJsonPost but also returns the response body (needed by the annotation
+// exchange, which reads the server's toApply list). Same TLS/auth plumbing.
+std::string doJsonPostWithResponse(const std::string& url, const std::string& body, int& outHttpCode,
+                                   int& outTransportErr) {
+  outHttpCode = 0;
+  outTransportErr = 0;
+#ifdef SIMULATOR
+  hwsim::TlsHandshakeScope tlsScope;
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+  if (isHttpsUrl(url)) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
+  }
+  addAuthHeaders(http);
+  http.addHeader("Content-Type", "application/json");
+  const int httpCode = http.POST(body.c_str());
+  std::string resp;
+  if (httpCode > 0) resp = http.getString().c_str();
+  http.end();
+  outHttpCode = httpCode;
+  outTransportErr = (httpCode < 0) ? httpCode : 0;
+  return resp;
+#else
+  ResponseBuffer buf;
+  esp_http_client_handle_t client = createClient(url.c_str(), &buf, HTTP_METHOD_POST);
+  if (!client) {
+    outTransportErr = ESP_ERR_NO_MEM;
+    return "";
+  }
+  if (esp_http_client_set_header(client, "Content-Type", "application/json") != ESP_OK ||
+      esp_http_client_set_post_field(client, body.c_str(), body.length()) != ESP_OK) {
+    outTransportErr = ESP_ERR_INVALID_STATE;
+    esp_http_client_cleanup(client);
+    return "";
+  }
+  esp_err_t err = esp_http_client_perform(client);
+  const int httpCode = esp_http_client_get_status_code(client);
+  esp_http_client_cleanup(client);
+  outHttpCode = httpCode;
+  outTransportErr = static_cast<int>(err);
+  if (err != ESP_OK) return std::string();
+  return buf.data ? std::string(buf.data) : std::string();
+#endif
+}
 }  // namespace
 
 KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
@@ -282,7 +335,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
   }
 
   std::string url = KOREADER_STORE.getBaseUrl() + "/users/auth";
-  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t freeHeap = HWSIM_FREE_HEAP();
   LOG_DBG("KOSync", "Authenticating: %s (heap: %u)", url.c_str(), (unsigned)freeHeap);
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u)", freeHeap, MIN_HEAP_FOR_TLS);
@@ -356,7 +409,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   }
 
   std::string url = KOREADER_STORE.getBaseUrl() + "/syncs/progress/" + documentHash;
-  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t freeHeap = HWSIM_FREE_HEAP();
   LOG_DBG("KOSync", "Getting progress: %s (heap: %u)", url.c_str(), (unsigned)freeHeap);
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u)", freeHeap, MIN_HEAP_FOR_TLS);
@@ -467,7 +520,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   }
 
   std::string url = KOREADER_STORE.getBaseUrl() + "/syncs/progress";
-  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t freeHeap = HWSIM_FREE_HEAP();
   LOG_DBG("KOSync", "Updating progress: %s (heap: %u)", url.c_str(), (unsigned)freeHeap);
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u)", freeHeap, MIN_HEAP_FOR_TLS);
@@ -561,7 +614,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string&
     return OK;  // nothing to upload
   }
 
-  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t freeHeap = HWSIM_FREE_HEAP();
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     LOG_ERR("KOStats", "Insufficient heap for TLS handshake: %u bytes free (need %u)", (unsigned)freeHeap,
             (unsigned)MIN_HEAP_FOR_TLS);
@@ -638,7 +691,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadAnnotations(const std::strin
     return OK;  // nothing to upload
   }
 
-  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t freeHeap = HWSIM_FREE_HEAP();
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     LOG_ERR("KOAnnot", "Insufficient heap for TLS handshake: %u bytes free (need %u)", (unsigned)freeHeap,
             (unsigned)MIN_HEAP_FOR_TLS);
@@ -700,6 +753,117 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadAnnotations(const std::strin
   }
 
   LOG_INF("KOAnnot", "Uploaded %u annotations for %s", (unsigned)annotations.size(), documentHash.c_str());
+  return OK;
+}
+
+KOReaderSyncClient::Error KOReaderSyncClient::exchangeAnnotations(const std::string& deviceModel,
+                                                                  const std::string& documentHash,
+                                                                  std::vector<AnnotationDownload>& outAdds,
+                                                                  bool& outMore, const std::string& deviceTime) {
+  lastHttpCode = 0;
+  lastTransportError = 0;
+  outAdds.clear();
+  outMore = false;
+  if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
+  if (documentHash.size() != 32) return OK;
+
+  const uint32_t freeHeap = HWSIM_FREE_HEAP();
+  if (freeHeap < MIN_HEAP_FOR_TLS) return LOW_MEMORY;
+
+  const std::string url = KOREADER_STORE.getBaseUrl() + "/plugin/annotations/exchange";
+
+  // Pull-oriented: send an empty device key-set (keysComplete=false disables
+  // server-side deletion detection, which we can't act on yet) and no changes.
+  JsonDocument doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["deviceModel"] = deviceModel;
+  doc["pluginVersion"] = ANNOTATIONS_PLUGIN_VERSION;
+  if (!deviceTime.empty()) doc["deviceTime"] = deviceTime;
+  JsonArray books = doc["books"].to<JsonArray>();
+  JsonObject book = books.add<JsonObject>();
+  book["hash"] = documentHash;
+  book["keys"] = JsonArray();          // empty
+  book["keysComplete"] = false;
+  book["changes"] = JsonArray();       // empty
+  std::string body;
+  serializeJson(doc, body);
+
+  int httpCode = 0;
+  int transportErr = 0;
+  const std::string resp = doJsonPostWithResponse(url, body, httpCode, transportErr);
+  lastHttpCode = httpCode;
+  lastTransportError = transportErr;
+
+  if (httpCode == 401) return AUTH_FAILED;
+  if (httpCode == 404 || httpCode == 405 || httpCode == 501) return NOT_FOUND;
+  if (httpCode < 200 || httpCode >= 300) return (httpCode <= 0) ? NETWORK_ERROR : SERVER_ERROR;
+
+  JsonDocument rdoc;
+  if (deserializeJson(rdoc, resp)) return SERVER_ERROR;
+  JsonArrayConst results = rdoc["results"].as<JsonArrayConst>();
+  if (results.isNull()) return OK;
+  for (JsonObjectConst r : results) {
+    if (r["more"] | false) outMore = true;
+    JsonArrayConst adds = r["toApply"]["add"].as<JsonArrayConst>();
+    if (adds.isNull()) continue;
+    for (JsonObjectConst a : adds) {
+      AnnotationDownload d;
+      d.serverId = a["serverId"] | 0;
+      d.version = a["version"] | 0;
+      d.text = a["text"].as<const char*>() ? a["text"].as<const char*>() : "";
+      d.note = a["note"].as<const char*>() ? a["note"].as<const char*>() : "";
+      d.chapter = a["chapter"].as<const char*>() ? a["chapter"].as<const char*>() : "";
+      d.pageno = a["pageno"].isNull() ? -1 : (a["pageno"] | -1);
+      if (d.serverId > 0) outAdds.push_back(std::move(d));
+    }
+  }
+  LOG_INF("KOAnnot", "Exchange pulled %u server annotations for %s", (unsigned)outAdds.size(), documentHash.c_str());
+  return OK;
+}
+
+KOReaderSyncClient::Error KOReaderSyncClient::ackAnnotations(const std::string& deviceModel,
+                                                             const std::string& documentHash,
+                                                             const std::vector<AnnotationDownload>& applied,
+                                                             const std::string& deviceTime) {
+  lastHttpCode = 0;
+  lastTransportError = 0;
+  if (!KOREADER_STORE.hasCredentials()) return NO_CREDENTIALS;
+  if (documentHash.size() != 32 || applied.empty()) return OK;
+
+  const std::string url = KOREADER_STORE.getBaseUrl() + "/plugin/annotations/exchange-ack";
+
+  // Ack in chunks (server caps applied[] at 200 per book).
+  constexpr size_t CHUNK = 200;
+  for (size_t start = 0; start < applied.size(); start += CHUNK) {
+    const size_t end = std::min(start + CHUNK, applied.size());
+    JsonDocument doc;
+    doc["deviceId"] = DEVICE_ID;
+    doc["deviceModel"] = deviceModel;
+    doc["pluginVersion"] = ANNOTATIONS_PLUGIN_VERSION;
+    if (!deviceTime.empty()) doc["deviceTime"] = deviceTime;
+    JsonArray books = doc["books"].to<JsonArray>();
+    JsonObject book = books.add<JsonObject>();
+    book["hash"] = documentHash;
+    JsonArray app = book["applied"].to<JsonArray>();
+    for (size_t i = start; i < end; ++i) {
+      JsonObject e = app.add<JsonObject>();
+      e["serverId"] = applied[i].serverId;
+      e["version"] = applied[i].version;
+      e["status"] = "applied";
+    }
+    book["deleted"] = JsonArray();  // none
+
+    std::string body;
+    serializeJson(doc, body);
+    int httpCode = 0;
+    int transportErr = 0;
+    doJsonPost(url, body, httpCode, transportErr);
+    lastHttpCode = httpCode;
+    lastTransportError = transportErr;
+    if (httpCode == 401) return AUTH_FAILED;
+    if (httpCode == 404 || httpCode == 405 || httpCode == 501) return NOT_FOUND;
+    if (httpCode < 200 || httpCode >= 300) return (httpCode <= 0) ? NETWORK_ERROR : SERVER_ERROR;
+  }
   return OK;
 }
 

@@ -3,6 +3,7 @@
 #include <BidiUtils.h>
 #include <FontDecompressor.h>
 #include <HalGPIO.h>
+#include <HwSim.h>
 #include <Logging.h>
 #include <SdCardFont.h>
 #include <Utf8.h>
@@ -1933,6 +1934,10 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode, const
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
   display.displayBuffer(refreshMode, fadingFix || turnOffScreen);
+  // In the simulator this models the real e-ink refresh latency (~120 ms fast,
+  // ~380 ms full) so timing-sensitive loops (e.g. per-chunk download repaints)
+  // behave like hardware. No-op on device.
+  hwsim::displayDelay(refreshMode == HalDisplay::RefreshMode::FAST_REFRESH);
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,

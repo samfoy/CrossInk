@@ -86,6 +86,8 @@ class BookOrbitCatalogActivity final : public Activity {
   size_t downloadProgress = 0;
   size_t downloadTotal = 0;
   bool cancelRequested = false;
+  int lastPaintPct = -1;       // download-progress repaint throttle
+  uint32_t lastPaintMs = 0;
 
   void checkAndConnectWifi();
   void launchWifiSelection();
