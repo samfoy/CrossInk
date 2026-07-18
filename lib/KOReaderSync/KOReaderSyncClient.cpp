@@ -35,6 +35,8 @@ constexpr char DEVICE_ID[] = "crossink-device";
 // and the whole upload 400s). Bump the numeric suffix when the wire format of
 // the page-stats payload changes.
 constexpr char PAGESTATS_PLUGIN_VERSION[] = "crossink-ps-1";
+// Same 20-char cap applies; bump when the annotation payload changes.
+constexpr char ANNOTATIONS_PLUGIN_VERSION[] = "crossink-an-1";
 
 std::string formatHttpStatusMessage(int httpCode) {
   char buffer[96];
@@ -619,6 +621,85 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string&
   }
 
   LOG_INF("KOStats", "Uploaded %u page-stat events for %s", (unsigned)events.size(), store.documentHash().c_str());
+  return OK;
+}
+
+KOReaderSyncClient::Error KOReaderSyncClient::uploadAnnotations(const std::string& deviceModel,
+                                                                const std::string& documentHash,
+                                                                const std::vector<AnnotationUpload>& annotations,
+                                                                const std::string& deviceTime) {
+  lastHttpCode = 0;
+  lastTransportError = 0;
+  if (!KOREADER_STORE.hasCredentials()) {
+    LOG_DBG("KOAnnot", "No credentials configured");
+    return NO_CREDENTIALS;
+  }
+  if (annotations.empty() || documentHash.size() != 32) {
+    return OK;  // nothing to upload
+  }
+
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_HEAP_FOR_TLS) {
+    LOG_ERR("KOAnnot", "Insufficient heap for TLS handshake: %u bytes free (need %u)", (unsigned)freeHeap,
+            (unsigned)MIN_HEAP_FOR_TLS);
+    return LOW_MEMORY;
+  }
+
+  const std::string url = KOREADER_STORE.getBaseUrl() + "/plugin/annotations";
+
+  // Chunk annotations to keep each JSON body small on the C3's tight heap. The
+  // server upserts by (hash, pos0, datetime), so re-sending is idempotent.
+  constexpr size_t CHUNK = 20;
+  for (size_t start = 0; start < annotations.size(); start += CHUNK) {
+    const size_t end = std::min(start + CHUNK, annotations.size());
+
+    JsonDocument doc;
+    doc["deviceId"] = DEVICE_ID;
+    doc["deviceModel"] = deviceModel;
+    doc["pluginVersion"] = ANNOTATIONS_PLUGIN_VERSION;
+    if (!deviceTime.empty()) {
+      doc["deviceTime"] = deviceTime;
+    }
+    JsonArray books = doc["books"].to<JsonArray>();
+    JsonObject book = books.add<JsonObject>();
+    book["hash"] = documentHash;
+    JsonArray anns = book["annotations"].to<JsonArray>();
+    for (size_t i = start; i < end; ++i) {
+      const AnnotationUpload& a = annotations[i];
+      JsonObject an = anns.add<JsonObject>();
+      an["datetime"] = a.datetime;
+      an["drawer"] = "lighten";           // CrossInk has one highlight style
+      an["posFormat"] = "xpointer";       // synthetic locator (see header note)
+      an["pos0"] = a.pos0;
+      if (a.pageno >= 0) an["pageno"] = a.pageno;
+      if (!a.text.empty()) an["text"] = a.text;
+      if (!a.note.empty()) an["note"] = a.note;
+      if (!a.chapter.empty()) an["chapter"] = a.chapter;
+    }
+
+    std::string body;
+    serializeJson(doc, body);
+
+    int httpCode = 0;
+    int transportErr = 0;
+    LOG_DBG("KOAnnot", "Uploading annotations chunk %u-%u (%u bytes, heap %u)", (unsigned)start, (unsigned)end,
+            (unsigned)body.length(), (unsigned)ESP.getFreeHeap());
+    doJsonPost(url, body, httpCode, transportErr);
+    lastHttpCode = httpCode;
+    lastTransportError = transportErr;
+
+    if (httpCode == 200 || httpCode == 201 || httpCode == 202 || httpCode == 204) {
+      continue;  // chunk accepted
+    }
+    if (httpCode == 401) return AUTH_FAILED;
+    if (httpCode == 404 || httpCode == 405 || httpCode == 501) {
+      return NOT_FOUND;  // server doesn't implement this endpoint (plain kosync)
+    }
+    if (httpCode <= 0) return NETWORK_ERROR;
+    return SERVER_ERROR;
+  }
+
+  LOG_INF("KOAnnot", "Uploaded %u annotations for %s", (unsigned)annotations.size(), documentHash.c_str());
   return OK;
 }
 

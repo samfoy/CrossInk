@@ -83,7 +83,6 @@ class BookOrbitCatalogActivity final : public Activity {
   BookOrbitCatalogDetail detail;
   std::string downloadedPath;   // set once a download completes (this session)
   bool alreadyOnDevice = false; // file exists on SD from a prior download
-  bool coverReady = false;      // a converted BMP cover is available on SD
   size_t downloadProgress = 0;
   size_t downloadTotal = 0;
   bool cancelRequested = false;
@@ -98,7 +97,6 @@ class BookOrbitCatalogActivity final : public Activity {
   void loadQuery(const BookOrbitBooksQuery& query, int page);
   void launchSearch();
   void openBookDetail(int bookId);
-  void fetchAndPrepareCover();
   void downloadCurrentBook();
   void downloadNextInSeries();
   void markCurrentBookFinished();

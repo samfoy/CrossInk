@@ -90,6 +90,29 @@ class KOReaderSyncClient {
                                const std::string& deviceTime = "");
 
   /**
+   * One highlight/note to upload. CrossInk stores highlights by page/word index,
+   * not KOReader DOM xpointers, so pos0 is a synthetic CrossInk locator
+   * ("/crossink/<spine>/<page>/<word>") sent with posFormat="xpointer". The text
+   * + page + chapter are the meaningful, reviewable content server-side.
+   */
+  struct AnnotationUpload {
+    std::string text;         // highlighted text (required)
+    std::string note;         // optional user note
+    std::string chapter;      // chapter title (optional)
+    std::string pos0;         // synthetic locator (required by server)
+    std::string datetime;     // "YYYY-MM-DD HH:MM:SS" device-local
+    int pageno = 0;           // 0-based page
+  };
+
+  /**
+   * Upload highlights/notes for one book (POST /plugin/annotations). Chunks to
+   * keep each JSON body small on the C3 heap. documentHash is the 32-hex doc id.
+   * @return OK on success (2xx), NOT_FOUND if unsupported, error otherwise.
+   */
+  static Error uploadAnnotations(const std::string& deviceModel, const std::string& documentHash,
+                                 const std::vector<AnnotationUpload>& annotations, const std::string& deviceTime = "");
+
+  /**
    * Get human-readable error message.
    */
   static std::string errorString(Error error);

@@ -404,10 +404,6 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::downloadFile(int fileId, con
   return downloadUrlToFile(downloadUrl(fileId), destPath, onProgress, progressCtx, cancelFlag, knownTotal);
 }
 
-KOReaderCatalogClient::Error KOReaderCatalogClient::downloadThumbnail(int bookId, const std::string& destPath) {
-  return downloadUrlToFile(thumbnailUrl(bookId), destPath, nullptr, nullptr, nullptr, 0);
-}
-
 KOReaderCatalogClient::Error KOReaderCatalogClient::downloadUrlToFile(const std::string& url,
                                                                       const std::string& destPath,
                                                                       void (*onProgress)(size_t, size_t, void*),

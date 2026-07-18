@@ -94,6 +94,7 @@ class KOReaderSyncActivity final : public Activity {
   // BookOrbit page-stats endpoint (feeds reading streak/time/pace/DNA stats).
   // Best effort; must be called while WiFi is still connected.
   void uploadPageStats();
+  void uploadAnnotations();
   bool consumeInitialConfirmRelease();
   void ensureEpubLoaded();
   void saveProgressAndReturn(const CrossPointPosition& position);

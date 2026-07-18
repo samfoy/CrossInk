@@ -278,6 +278,14 @@ bool ClippingStore::hasAnyClippings() {
   return !Storage.listFiles(CLIPPINGS_DIR).empty();
 }
 
+bool ClippingStore::readForBook(const std::string& filePath, const std::string& bookType,
+                                std::vector<Clipping>& out) {
+  out.clear();
+  const std::string path = storeFilePathForBook(filePath, bookType);
+  if (!Storage.exists(path.c_str())) return false;
+  return instance.readFromFile(path, out);
+}
+
 bool ClippingStore::getAllClippedBooks(std::vector<ClippedBookEntry>& out) {
   if (!Storage.exists(CLIPPINGS_DIR)) return true;
 

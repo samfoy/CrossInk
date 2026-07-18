@@ -57,6 +57,9 @@ class ClippingStore {
 
   static bool hasAnyClippings();
   static bool getAllClippedBooks(std::vector<ClippedBookEntry>& out);
+  // Read one book's clippings into `out` without disturbing the loaded singleton
+  // (used by annotation sync). Returns false if the book has no clipping file.
+  static bool readForBook(const std::string& filePath, const std::string& bookType, std::vector<Clipping>& out);
   static void deleteForFilePath(const std::string& filePath, const std::string& bookType);
   static bool migrateForFilePath(const std::string& oldFilePath, const std::string& newFilePath,
                                  const std::string& title, const std::string& author, const std::string& bookType);

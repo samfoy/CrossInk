@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <ctime>
 
 #include "CrossPointSettings.h"
+#include "ClippingStore.h"
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
@@ -100,6 +102,7 @@ void KOReaderSyncActivity::saveProgressAndReturn(const CrossPointPosition& posit
   // Reading happened regardless of sync direction: flush buffered page-stats
   // while WiFi is still up (onExit -> silent reboot tears the radio down).
   uploadPageStats();
+  uploadAnnotations();
   returnToReader();
 }
 
@@ -329,6 +332,7 @@ void KOReaderSyncActivity::performUpload() {
   // buffer for a future BookOrbit sync.
   if (result == KOReaderSyncClient::OK) {
     uploadPageStats();
+    uploadAnnotations();
   }
 
   // Drop the radio while user reads the result; full teardown happens at silent reboot.
@@ -389,6 +393,78 @@ void KOReaderSyncActivity::uploadPageStats() {
     // Transient failure (network/auth/500): keep the buffer for a later retry
     // (idempotent server-side, so overlap is safe).
     LOG_DBG("KOSync", "Page-stats upload failed, will retry (err=%d, http=%d)", static_cast<int>(res),
+            KOReaderSyncClient::lastHttpCode);
+  }
+}
+
+void KOReaderSyncActivity::uploadAnnotations() {
+  if (!SETTINGS.shouldUploadReadingStats()) {
+    return;  // gated behind the same opt-in as page-stats
+  }
+  if (documentHash.size() != 32) return;
+
+  std::vector<Clipping> clippings;
+  if (!ClippingStore::readForBook(epubPath, "epub", clippings) || clippings.empty()) {
+    return;  // no highlights for this book
+  }
+
+  // Map CrossInk clippings to the server's annotation shape. CrossInk has no
+  // KOReader DOM xpointers, so pos0 is a synthetic-but-STABLE locator built from
+  // the clipping's spine/page/word position. The dedup key is md5(datetime|pos0),
+  // so datetime must also be stable across syncs — we derive it deterministically
+  // from pos0 (a fixed epoch base + an offset hashed from the locator). This keeps
+  // re-syncs idempotent (server reports them "unchanged") at the cost of the
+  // displayed date not being the real highlight time (Phase 1 tradeoff).
+  std::vector<KOReaderSyncClient::AnnotationUpload> uploads;
+  uploads.reserve(clippings.size());
+  for (const Clipping& c : clippings) {
+    if (c.text.empty()) continue;
+    KOReaderSyncClient::AnnotationUpload a;
+    char pos[64];
+    snprintf(pos, sizeof(pos), "/crossink/%u/%u/%u", static_cast<unsigned>(c.spineIndex),
+             static_cast<unsigned>(c.startPage), static_cast<unsigned>(c.startWordIndex));
+    a.pos0 = pos;
+    a.pageno = static_cast<int>(c.startPage);
+    a.text = c.text;
+    a.chapter = c.chapterTitle;
+
+    // Deterministic datetime from a stable FNV-1a hash of pos0, spread across a
+    // ~10-year window from 2020-01-01 so the md5(datetime|pos0) key is stable.
+    uint32_t h = 2166136261u;
+    for (char ch : a.pos0) {
+      h ^= static_cast<uint8_t>(ch);
+      h *= 16777619u;
+    }
+    const uint32_t base = 1577836800u;              // 2020-01-01 00:00:00 UTC
+    const uint32_t epoch = base + (h % 315360000u);  // + up to ~10 years
+    time_t t = static_cast<time_t>(epoch);
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    char dt[24];
+    snprintf(dt, sizeof(dt), "%04d-%02d-%02d %02d:%02d:%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    a.datetime = dt;
+    uploads.push_back(std::move(a));
+  }
+  if (uploads.empty()) return;
+
+  std::string deviceTime;
+  ReadingStatsDateTime dtNow;
+  if (getCurrentLocalReadingStatsDateTime(dtNow) && dtNow.isValid()) {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u", dtNow.date.year, dtNow.date.month, dtNow.date.day,
+             dtNow.hour, dtNow.minute, dtNow.second);
+    deviceTime = buf;
+  }
+
+  const std::string model = SETTINGS.getEffectiveDeviceName();
+  const auto res = KOReaderSyncClient::uploadAnnotations(model, documentHash, uploads, deviceTime);
+  if (res == KOReaderSyncClient::OK) {
+    LOG_INF("KOSync", "Annotations uploaded (%u) for %s", (unsigned)uploads.size(), documentHash.c_str());
+  } else if (res == KOReaderSyncClient::NOT_FOUND) {
+    LOG_INF("KOSync", "Server has no annotations endpoint (404); skipping");
+  } else {
+    LOG_DBG("KOSync", "Annotation upload failed (err=%d, http=%d)", static_cast<int>(res),
             KOReaderSyncClient::lastHttpCode);
   }
 }
