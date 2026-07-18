@@ -32,40 +32,73 @@ sensitive bit — fall back to no-cover or a smaller box if it's tight).
 
 ---
 
-## ⭐ Clippings / Annotations sync — Phase 1 DONE (upload), verified
+## ✅ Tier 0 — Finish what's in flight
 
-**Phase 1 (one-way upload) is built and verified end-to-end against the live
-server** (HTTP 201, `upserted:1`; idempotent re-POST `upserted:0`, no duplicate
-DB row). On every reader→BookOrbit sync (gated behind the existing
-`shouldUploadReadingStats()` opt-in), CrossInk uploads the current book's
-highlights/notes via `POST /plugin/annotations`.
+### 0.1 Download progress bar — DONE (safe re-introduction)
+Live bar + `NN%` + `x / y KB`. The bar was pulled because the progress callback
+fired `requestUpdate(true)`, waking the concurrent render task that raced
+HTTPClient's malloc → `-8 TOO_LESS_RAM`. Now the callback uses
+`requestUpdateAndWait()`, which **blocks the download task while the render task
+draws** — serialized, never concurrent. Throttled to whole-percent changes,
+min ~700 ms apart, so a multi-MB book isn't dominated by ~380 ms e-ink refreshes.
+**Hardware test:** download a 3-4 MB book, watch the bar advance, confirm no `-8`.
 
-- `KOReaderSyncClient::uploadAnnotations()` — chunked (20) POST, same TLS/auth/
-  404-self-heal as page-stats; `pluginVersion crossink-an-1`.
-- `ClippingStore::readForBook()` — reads one book's clippings without disturbing
-  the loaded singleton.
-- `KOReaderSyncActivity::uploadAnnotations()` — maps clippings→annotations,
-  uploads alongside page-stats.
+### 0.2 Simulator hardware emulation — DONE (`lib/HwSim`)
+The stock sim reported a flat 1 MB heap and never failed an alloc, hiding every
+C3 OOM we hit on hardware. `HwSim` now models the real limits (no-ops on device):
+- **Emulated heap:** ~84 KB free idle, **40 KB largest contiguous block**,
+  dropping to ~59 KB during a TLS handshake (`TlsHandshakeScope`). Tuned to real
+  logs.
+- **`HWSIM_FREE_HEAP()` seam** in the sync client's TLS guards so
+  `MIN_HEAP_FOR_TLS` actually trips in-sim; `doJsonPost*` wrap a handshake scope.
+  `trackAlloc()` fails >40 KB allocs (reproduces the fragmentation OOM).
+- **e-ink refresh latency** (~120 ms fast / ~380 ms full) via
+  `hwsim::displayDelay` in `GfxRenderer::displayBuffer`, so per-chunk-repaint
+  stalls surface in-sim.
+- Verified: standalone test → free=84K, block=40K, TLS-trough=59K; a 50 KB alloc
+  FAILs, a 16 KB alloc OKs. **Next:** route the download buffer + JSON parse
+  allocs through `trackAlloc` so a regression that reintroduces a big alloc fails
+  the sim build's runtime path, not just hardware.
 
-**Mapping (CrossInk has no KOReader DOM xpointers):** `pos0` = synthetic stable
-`/crossink/<spine>/<page>/<word>`, `posFormat=xpointer`, `drawer=lighten`.
-`datetime` derived deterministically from an FNV-1a hash of `pos0` so the server
-dedup key `md5(datetime|pos0)` is stable across re-syncs. **Tradeoff:** displayed
-date isn't the real highlight time (clipping timestamps are millis-uptime, not
-wall clock). Text + page + chapter sync correctly.
+### 0.3 Merge `feat/bookorbit-catalog` → `main`
+After a hardware pass on the catalog + progress bar + annotation sync. Squash the
+long fix-chain into clean feature commits; drop the DEBUG suffix on release bins.
 
-**Hardware test:** enable Track Reading Stats, highlight some text, trigger a
-sync, confirm highlights appear in BookOrbit; sync again → no duplicates.
+---
 
-### Phase 2 — bidirectional exchange (follow-up, not built)
-- `POST /annotations/exchange` + `/exchange-ack` with a per-book sync cursor on
-  SD; merge server annotations into the local `ClippingStore`.
-- **Prereq worth doing first:** fix `Clipping::timestamp` to store a real UTC
-  epoch at capture (currently `millis()/1000`). That gives real highlight
-  datetimes (better than the synthetic ones) and simplifies the exchange key.
-- Handle the pos0 round-trip: server annotations created in KOReader proper carry
-  real xpointers CrossInk can't resolve to a page — decide whether to show them
-  read-only or map by page/chapter.
+## ⭐ Clippings / Annotations sync — Phase 1 (upload) + Phase 2 (bidirectional) DONE
+
+**Phase 1 (upload) and Phase 2 (pull) are both built and verified end-to-end
+against the live server.** Gated behind the existing `shouldUploadReadingStats()`
+opt-in; both run on every reader→BookOrbit sync.
+
+**Upload (Phase 1):** `POST /plugin/annotations` — highlights land server-side
+(HTTP 201, idempotent). `pos0` = synthetic `/crossink/<spine>/<page>/<word>`,
+`datetime` deterministically hashed from `pos0` so re-syncs don't duplicate.
+
+**Bidirectional pull (Phase 2):** verified full cycle — exchange pulls server
+annotations (201), ack advances the per-device cursor (`acked:1`), re-exchange
+returns 0.
+- `KOReaderSyncClient::exchangeAnnotations()` / `ackAnnotations()`.
+- `KOReaderSyncActivity::downloadAnnotations()` merges new server highlights into
+  the on-device `My Clippings.txt` (page + text + chapter + note). **Limitation:**
+  CrossInk can't re-anchor the server's KOReader DOM xpointer, so pulled
+  highlights are a **readable record, not a tappable in-book highlight.** Applied
+  serverIds tracked in `/.crosspoint/annot_synced/<hash>.txt` to avoid dupes.
+
+**Hardware test:** enable Track Reading Stats; highlight on-device → sync →
+appears in BookOrbit; make a highlight in BookOrbit web → sync → appears in the
+device's clippings; sync twice → no duplicates either direction.
+
+### Phase 2b / future refinements
+- **Fix `Clipping::timestamp`** to a real UTC epoch at capture (currently
+  `millis()/1000`). Enables real highlight datetimes (drop the synthetic scheme)
+  and lets us send device `keys[]` with `keysComplete=true` for proper two-way
+  reconcile + deletion detection.
+- **Push local→server deletions** and edits (currently pull-only for adds; we
+  send empty `changes[]`).
+- Decide whether to attempt page-based re-anchoring of pulled highlights so they
+  render in-book (hard: server xpointer ≠ CrossInk position model).
 
 ### Phase 3 — UI
 - Per-book annotation count on the catalog detail screen; "N highlights synced".
