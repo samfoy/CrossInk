@@ -32,50 +32,43 @@ sensitive bit — fall back to no-cover or a smaller box if it's tight).
 
 ---
 
-## ⭐ NEXT FEATURE — Clippings / Annotations sync
+## ⭐ Clippings / Annotations sync — Phase 1 DONE (upload), verified
 
-**Goal:** two-way sync of highlights + notes between the X3 and BookOrbit, so
-annotations made on-device show up in BookOrbit (and vice-versa), like the KOReader
-plugin's annotation exchange.
+**Phase 1 (one-way upload) is built and verified end-to-end against the live
+server** (HTTP 201, `upserted:1`; idempotent re-POST `upserted:0`, no duplicate
+DB row). On every reader→BookOrbit sync (gated behind the existing
+`shouldUploadReadingStats()` opt-in), CrossInk uploads the current book's
+highlights/notes via `POST /plugin/annotations`.
 
-**Server API is ready** (confirmed in `koreader-plugin.controller.ts`):
-- `POST …/plugin/annotations` — bulk upload (`AnnotationsUploadDto`).
-- `POST …/plugin/annotations/exchange` — **bidirectional** exchange
-  (`AnnotationExchangeDto`): client sends a per-book key/state, server returns
-  applied additions/updates/deletions.
-- `POST …/plugin/annotations/exchange-ack` — client acks what it applied
-  (`AnnotationExchangeAckDto`), so the server can advance its sync cursor.
-- Annotation shape (`koreader-exchange.dto.ts`): `pos0`/`pos1` (KOReader xpointer
-  positions), `pageno`, `text`/`note`, `datetimeUpdated`, keyed by book (document
-  hash, same hash CrossInk already computes for kosync/page-stats).
+- `KOReaderSyncClient::uploadAnnotations()` — chunked (20) POST, same TLS/auth/
+  404-self-heal as page-stats; `pluginVersion crossink-an-1`.
+- `ClippingStore::readForBook()` — reads one book's clippings without disturbing
+  the loaded singleton.
+- `KOReaderSyncActivity::uploadAnnotations()` — maps clippings→annotations,
+  uploads alongside page-stats.
 
-**CrossInk side — what exists vs. needs building:**
-- ✅ Document-hash + kosync header auth (reused from page-stats/catalog).
-- ✅ `ClippingsManager` (`src/clippings/ClippingsManager.cpp`) already manages
-  on-device highlights/notes — **this is the local store to bridge.**
-- ❓ Need to map CrossInk's clipping model ↔ KOReader `pos0/pos1/pageno` xpointers.
-  This is the crux: CrossInk stores highlights against its own EPUB position model;
-  the exchange protocol expects KOReader-style xpointers. Investigate whether a
-  faithful round-trip is possible or whether we sync at page/%-granularity first.
+**Mapping (CrossInk has no KOReader DOM xpointers):** `pos0` = synthetic stable
+`/crossink/<spine>/<page>/<word>`, `posFormat=xpointer`, `drawer=lighten`.
+`datetime` derived deterministically from an FNV-1a hash of `pos0` so the server
+dedup key `md5(datetime|pos0)` is stable across re-syncs. **Tradeoff:** displayed
+date isn't the real highlight time (clipping timestamps are millis-uptime, not
+wall clock). Text + page + chapter sync correctly.
 
-**Suggested phased build:**
-1. **Phase 1 — upload only (one-way):** on a manual "Sync Annotations" action (or
-   piggyback the existing kosync sync), read `ClippingsManager` highlights for
-   books that have a BookOrbit match (by hash), map to the upload DTO, `POST
-   /annotations`. Low risk, immediately useful (highlights land in BookOrbit).
-   Heap: batch/paginate the upload like page-stats to stay within the C3 budget.
-2. **Phase 2 — bidirectional exchange:** implement `exchange` + `exchange-ack`
-   with a per-book sync cursor stored on SD; merge server annotations into the
-   local store. Handle the pos0/pos1 mapping properly here.
-3. **Phase 3 — UI:** surface "N highlights synced" and a per-book annotation count
-   on the catalog detail screen; optional conflict/merge messaging.
+**Hardware test:** enable Track Reading Stats, highlight some text, trigger a
+sync, confirm highlights appear in BookOrbit; sync again → no duplicates.
 
-**Open questions to resolve first (do these before coding):**
-- Exact `AnnotationsUploadDto` / `ExchangeBookDto` field list (dump the DTOs).
-- How `ClippingsManager` represents a highlight on disk, and whether it retains
-  enough position info to produce/consume `pos0/pos1`.
-- Whether to gate behind the same opt-in as page-stats (`uploadReadingStats`) or a
-  new `syncAnnotations` toggle.
+### Phase 2 — bidirectional exchange (follow-up, not built)
+- `POST /annotations/exchange` + `/exchange-ack` with a per-book sync cursor on
+  SD; merge server annotations into the local `ClippingStore`.
+- **Prereq worth doing first:** fix `Clipping::timestamp` to store a real UTC
+  epoch at capture (currently `millis()/1000`). That gives real highlight
+  datetimes (better than the synthetic ones) and simplifies the exchange key.
+- Handle the pos0 round-trip: server annotations created in KOReader proper carry
+  real xpointers CrossInk can't resolve to a page — decide whether to show them
+  read-only or map by page/chapter.
+
+### Phase 3 — UI
+- Per-book annotation count on the catalog detail screen; "N highlights synced".
 
 ---
 
