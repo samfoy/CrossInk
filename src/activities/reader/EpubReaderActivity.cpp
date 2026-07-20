@@ -1278,12 +1278,15 @@ uint32_t utcEpochFromCivil(uint16_t year, uint8_t month, uint8_t day, uint8_t ho
 
 void EpubReaderActivity::capturePageStatEvent(uint32_t dwellSeconds) {
   if (dwellSeconds == 0 || !epub || !section) {
+    LOG_INF("KOStats", "capture skip: dwell=%u epub=%d section=%d", (unsigned)dwellSeconds, epub ? 1 : 0,
+            section ? 1 : 0);
     return;
   }
   // Opt-in only: don't buffer anything unless the user enabled BookOrbit
   // page-stats upload. Keeps plain-kosync users unaffected (no SD writes, no
   // buffer growth, nothing uploaded).
   if (!SETTINGS.shouldUploadReadingStats()) {
+    LOG_INF("KOStats", "capture skip: upload-stats toggle off");
     return;
   }
 
@@ -1320,6 +1323,8 @@ void EpubReaderActivity::capturePageStatEvent(uint32_t dwellSeconds) {
 
   pageStatsStore.addEvent(startEpoch, dwellSeconds, overall);
   pageStatsDirty = true;
+  LOG_INF("KOStats", "captured event: dwell=%u overall=%.3f buffered=%u", (unsigned)dwellSeconds, overall,
+          (unsigned)pageStatsStore.size());
 }
 
 bool EpubReaderActivity::getSessionAveragePaceSeconds(uint16_t& avgSeconds) const {
@@ -1909,8 +1914,11 @@ void EpubReaderActivity::onExit() {
       recoverStoredPaceFromSession("reader_exit");
       refreshCachedTimeLeftEstimate();
       stats.save(epub->getCachePath());
+      LOG_INF("KOStats", "onExit flush: dirty=%d buffered=%u hash=%s", pageStatsDirty ? 1 : 0,
+              (unsigned)pageStatsStore.size(), pageStatsStore.documentHash().c_str());
       if (pageStatsDirty && pageStatsStore.save()) {
         pageStatsDirty = false;
+        LOG_INF("KOStats", "onExit flush: saved to disk");
       }
     }
     globalStats.save();

@@ -360,13 +360,18 @@ void KOReaderSyncActivity::performUpload() {
 
 void KOReaderSyncActivity::uploadPageStats() {
   if (!SETTINGS.shouldUploadReadingStats()) {
+    LOG_INF("KOSync", "page-stats: upload-stats toggle off, skipping");
     return;  // opt-in feature disabled
   }
 
   KOReaderPageStatsStore store;
-  if (!store.load(documentHash) || store.empty()) {
+  const bool loaded = store.load(documentHash);
+  if (!loaded || store.empty()) {
+    LOG_INF("KOSync", "page-stats: nothing to upload (loaded=%d empty=%d hash=%s)", loaded ? 1 : 0,
+            store.empty() ? 1 : 0, documentHash.c_str());
     return;  // nothing buffered for this book
   }
+  LOG_INF("KOSync", "page-stats: uploading %u buffered events", (unsigned)store.size());
 
   // Mint a device-local wall-clock string for the server (KOReader datetimes
   // carry no timezone). Best effort; empty is acceptable (server falls back).
