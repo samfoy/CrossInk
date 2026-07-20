@@ -276,6 +276,17 @@ int doJsonPost(const std::string& url, const std::string& body, int& outHttpCode
   }
   addAuthHeaders(http);
   http.addHeader("Content-Type", "application/json");
+  // Bound the request: on a weak/keep-alive TLS socket the ESP32 HTTPClient
+  // POST-body write can STALL for minutes (observed: a 4.8 KB page-stats chunk
+  // hung ~153s until Caddy 504'd, connection timed out; the body never fully
+  // arrived). setTimeout caps the socket read/write so a stall aborts in ~20s
+  // and the caller can retry; Connection: close + setReuse(false) forces a fresh
+  // connection per POST so a half-wedged keep-alive socket can't poison the next
+  // chunk. (The server accepts a 60-event chunk in <0.5s, so 20s is ample.)
+  http.setTimeout(20000);
+  http.setConnectTimeout(20000);
+  http.setReuse(false);
+  http.addHeader("Connection", "close");
   const int httpCode = http.POST(reinterpret_cast<uint8_t*>(const_cast<char*>(body.c_str())), body.length());
   http.end();
   outHttpCode = httpCode;
@@ -328,6 +339,12 @@ std::string doJsonPostWithResponse(const std::string& url, const std::string& bo
   }
   addAuthHeaders(http);
   http.addHeader("Content-Type", "application/json");
+  // Bound the request (see doJsonPost): cap a stalled body write at ~20s and use
+  // a fresh non-keep-alive connection so a wedged socket can't hang for minutes.
+  http.setTimeout(20000);
+  http.setConnectTimeout(20000);
+  http.setReuse(false);
+  http.addHeader("Connection", "close");
   const int httpCode = http.POST(reinterpret_cast<uint8_t*>(const_cast<char*>(body.c_str())), body.length());
   std::string resp;
   if (httpCode > 0) resp = http.getString().c_str();
@@ -637,10 +654,13 @@ KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string&
   const std::string url = KOREADER_STORE.getBaseUrl() + "/plugin/page-stats";
   const auto& events = store.events();
 
-  // Chunk events to keep each JSON body small on the ESP32-C3's tight heap. The
-  // server clusters events across requests by (deviceId,bookFileId,startTime),
-  // so splitting a session across chunks is safe and idempotent.
-  constexpr size_t CHUNK = 60;
+  // Chunk events to keep each JSON body small on the ESP32-C3's tight heap AND
+  // small on the wire — a large body over a weak keep-alive TLS socket can stall
+  // the write for minutes (see doJsonPost). 30 events ≈ 2.5 KB, which the server
+  // accepts in well under a second. The server clusters events across requests
+  // by (deviceId,bookFileId,startTime), so splitting a session across chunks is
+  // safe and idempotent.
+  constexpr size_t CHUNK = 30;
   for (size_t start = 0; start < events.size(); start += CHUNK) {
     const size_t end = std::min(start + CHUNK, events.size());
 
