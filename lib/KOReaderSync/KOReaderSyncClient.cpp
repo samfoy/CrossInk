@@ -7,10 +7,9 @@
 #include <HTTPClient.h>
 #include <I18n.h>
 #include <Logging.h>
-#ifdef SIMULATOR
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#else
+#ifndef SIMULATOR
 #include <esp_crt_bundle.h>
 #include <esp_err.h>
 #include <esp_http_client.h>
@@ -136,7 +135,9 @@ KOReaderSyncClient::Error validateAuthResponse(const char* body) {
 // contiguous block) because the failure mode is aggregate exhaustion, not one large alloc.
 constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
 
-#ifdef SIMULATOR
+// Shared by BOTH the simulator and device HTTPClient paths (the feature POST
+// helpers below use HTTPClient + WiFiClientSecure::setInsecure() on device too,
+// not just in the simulator, so these must be available unconditionally).
 void addAuthHeaders(HTTPClient& http) {
   http.addHeader("Accept", "application/vnd.koreader.v1+json");
   http.addHeader("x-auth-user", KOREADER_STORE.getUsername().c_str());
@@ -145,7 +146,8 @@ void addAuthHeaders(HTTPClient& http) {
 }
 
 bool isHttpsUrl(const std::string& url) { return url.rfind("https://", 0) == 0; }
-#else
+
+#ifndef SIMULATOR
 // Small TLS buffers to fit in ESP32-C3's limited heap (~46KB free after WiFi).
 // KOSync payloads are tiny JSON (<1KB), so 2KB buffers are sufficient.
 // Default 16KB buffers cause OOM during TLS handshake.
@@ -253,25 +255,32 @@ int doJsonPost(const std::string& url, const std::string& body, int& outHttpCode
   outTransportErr = (httpCode < 0) ? httpCode : 0;
   return httpCode;
 #else
-  ResponseBuffer buf;
-  esp_http_client_handle_t client = createClient(url.c_str(), &buf, HTTP_METHOD_POST);
-  if (!client) {
-    outTransportErr = ESP_ERR_NO_MEM;
-    return -1;
+  // Device path: use HTTPClient + WiFiClientSecure::setInsecure() — the SAME
+  // heap-safe TLS stack as kosync progress and the catalog client. Do NOT use
+  // esp_http_client + esp_crt_bundle_attach here: the Mozilla CA bundle costs
+  // ~40 KB of small allocations during the handshake, and when this POST runs
+  // late in a sync (after progress + annotation upload) the heap is fragmented
+  // down to ~a few hundred bytes free -> mbedTLS can't allocate for cert
+  // verification -> "esp-x509-crt-bundle: PK verify failed" / handshake -0x3000
+  // (an OOM masquerading as a cert error). setInsecure skips the bundle and cert
+  // verification, matching the trust model kosync already uses to this server.
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+  if (isHttpsUrl(url)) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
   }
-  if (esp_http_client_set_header(client, "Content-Type", "application/json") != ESP_OK ||
-      esp_http_client_set_post_field(client, body.c_str(), body.length()) != ESP_OK) {
-    LOG_ERR("KOStats", "Failed to set page-stats request body");
-    outTransportErr = ESP_ERR_INVALID_STATE;
-    esp_http_client_cleanup(client);
-    return -1;
-  }
-  esp_err_t err = esp_http_client_perform(client);
-  const int httpCode = esp_http_client_get_status_code(client);
-  esp_http_client_cleanup(client);
+  addAuthHeaders(http);
+  http.addHeader("Content-Type", "application/json");
+  const int httpCode = http.POST(reinterpret_cast<uint8_t*>(const_cast<char*>(body.c_str())), body.length());
+  http.end();
   outHttpCode = httpCode;
-  outTransportErr = static_cast<int>(err);
-  return (err != ESP_OK) ? -1 : httpCode;
+  outTransportErr = (httpCode < 0) ? httpCode : 0;
+  return httpCode;
 #endif
 }
 
@@ -303,25 +312,29 @@ std::string doJsonPostWithResponse(const std::string& url, const std::string& bo
   outTransportErr = (httpCode < 0) ? httpCode : 0;
   return resp;
 #else
-  ResponseBuffer buf;
-  esp_http_client_handle_t client = createClient(url.c_str(), &buf, HTTP_METHOD_POST);
-  if (!client) {
-    outTransportErr = ESP_ERR_NO_MEM;
-    return "";
+  // Device path: HTTPClient + WiFiClientSecure::setInsecure() (heap-safe, no CA
+  // bundle) — see the rationale in doJsonPost. This is the call the annotation
+  // exchange uses; on the old esp_crt_bundle path it OOM'd at the handshake
+  // ("PK verify failed", Min Free ~400 bytes) because it runs last in a sync.
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+  if (isHttpsUrl(url)) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
   }
-  if (esp_http_client_set_header(client, "Content-Type", "application/json") != ESP_OK ||
-      esp_http_client_set_post_field(client, body.c_str(), body.length()) != ESP_OK) {
-    outTransportErr = ESP_ERR_INVALID_STATE;
-    esp_http_client_cleanup(client);
-    return "";
-  }
-  esp_err_t err = esp_http_client_perform(client);
-  const int httpCode = esp_http_client_get_status_code(client);
-  esp_http_client_cleanup(client);
+  addAuthHeaders(http);
+  http.addHeader("Content-Type", "application/json");
+  const int httpCode = http.POST(reinterpret_cast<uint8_t*>(const_cast<char*>(body.c_str())), body.length());
+  std::string resp;
+  if (httpCode > 0) resp = http.getString().c_str();
+  http.end();
   outHttpCode = httpCode;
-  outTransportErr = static_cast<int>(err);
-  if (err != ESP_OK) return std::string();
-  return buf.data ? std::string(buf.data) : std::string();
+  outTransportErr = (httpCode < 0) ? httpCode : 0;
+  return resp;
 #endif
 }
 }  // namespace
@@ -782,9 +795,15 @@ KOReaderSyncClient::Error KOReaderSyncClient::exchangeAnnotations(const std::str
   JsonArray books = doc["books"].to<JsonArray>();
   JsonObject book = books.add<JsonObject>();
   book["hash"] = documentHash;
-  book["keys"] = JsonArray();          // empty
+  // Use .to<JsonArray>() to materialize REAL empty arrays as members of `book`.
+  // `book["keys"] = JsonArray();` serializes as `null` in ArduinoJson v7 (a
+  // detached, unbound array), which the server's DTO rejects with HTTP 400
+  // ("books.0.keys must be an array" / "changes must be an array"). Pull-only:
+  // empty keys + keysComplete=false disables server-side deletion detection
+  // (which we can't act on yet); empty changes = no local edits to push.
+  book["keys"].to<JsonArray>();          // empty []
   book["keysComplete"] = false;
-  book["changes"] = JsonArray();       // empty
+  book["changes"].to<JsonArray>();       // empty []
   std::string body;
   serializeJson(doc, body);
 
@@ -851,7 +870,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::ackAnnotations(const std::string& 
       e["version"] = applied[i].version;
       e["status"] = "applied";
     }
-    book["deleted"] = JsonArray();  // none
+    book["deleted"].to<JsonArray>();  // empty [] (none; = JsonArray() serializes as null -> HTTP 400)
 
     std::string body;
     serializeJson(doc, body);
