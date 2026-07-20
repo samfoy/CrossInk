@@ -285,8 +285,41 @@ KOReaderCatalogClient::Error KOReaderCatalogClient::fetchDetail(int bookId, Book
   const Error e = httpGetJson(url, body);
   if (e != OK) return e;
 
+  // A book deep in a long series (e.g. This Inevitable Ruin, book 7 of 8) returns
+  // a ~11 KB detail JSON: the server attaches three relatedSections ("More in
+  // series", "Also by this author", "Similar books" = up to 24 nested book
+  // objects) plus a ~3 KB description, genres, tags, per-file/per-sibling URLs.
+  // Deserializing that whole tree needs ~2-3x its size in heap and OOMs the C3
+  // (~34 KB largest contiguous block after the TLS handshake) -> NoMemory ->
+  // PARSE_ERROR, surfaced as "Failed to parse feed". We only read ~12 fields, so
+  // a deserialization filter tells ArduinoJson to allocate tree nodes ONLY for
+  // those, keeping the parsed document small enough for any book. (A single
+  // filter object under an array key applies to every element of that array.)
+  JsonDocument filter;
+  filter["id"] = true;
+  filter["title"] = true;
+  filter["authors"] = true;
+  filter["seriesName"] = true;
+  filter["seriesIndex"] = true;
+  filter["seriesId"] = true;
+  filter["hasCover"] = true;
+  filter["readStatus"] = true;
+  filter["progressPercentage"] = true;
+  filter["description"] = true;
+  JsonObject filterFile = filter["files"].add<JsonObject>();
+  filterFile["id"] = true;
+  filterFile["format"] = true;
+  filterFile["role"] = true;
+  filterFile["sizeBytes"] = true;
+  JsonObject filterSection = filter["relatedSections"].add<JsonObject>();
+  filterSection["id"] = true;
+  JsonObject filterSectionBook = filterSection["books"].add<JsonObject>();
+  filterSectionBook["id"] = true;
+  filterSectionBook["seriesIndex"] = true;
+  filterSectionBook["title"] = true;
+
   JsonDocument doc;
-  const DeserializationError jerr = deserializeJson(doc, body);
+  const DeserializationError jerr = deserializeJson(doc, body, DeserializationOption::Filter(filter));
   if (jerr) return PARSE_ERROR;
 
   out.id = doc["id"] | 0;
