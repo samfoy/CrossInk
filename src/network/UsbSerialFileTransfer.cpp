@@ -615,10 +615,34 @@ ProcessResult handleLine() {
   if (strcmp(lineBuffer, "CMD:SCREENSHOT") == 0) {
     return ProcessResult::ScreenshotRequested;
   }
+
+  // CMD:BTN:<name> — inject a synthetic button tap (dev rig, over serial).
+  // Names match MappedInputManager::Button enum order. Only honored on builds
+  // compiled with -DCROSSINK_RIG_INPUT (see main.cpp); on a stock build the
+  // request is parsed but the caller ignores it.
+  if (strncmp(lineBuffer, "CMD:BTN:", 8) == 0) {
+    const char* name = lineBuffer + 8;
+    static const struct {
+      const char* name;
+      int index;
+    } kButtons[] = {{"BACK", 0},   {"CONFIRM", 1}, {"LEFT", 2},
+                    {"RIGHT", 3},  {"UP", 4},      {"DOWN", 5},
+                    {"POWER", 6},  {"PAGEBACK", 7}, {"PAGEFORWARD", 8}};
+    for (const auto& b : kButtons) {
+      if (strcmp(name, b.name) == 0) {
+        lastRequestedButton = b.index;
+        return ProcessResult::ButtonRequested;
+      }
+    }
+    writeLine("ERR:unknown_button\n");
+    return ProcessResult::None;
+  }
   return ProcessResult::None;
 }
 
 }  // namespace
+
+int lastRequestedButton = -1;
 
 ProcessResult process(bool allowed) {
   if (!logSerial) return ProcessResult::None;

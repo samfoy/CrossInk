@@ -903,19 +903,36 @@ void loop() {
 
   renderer.setFadingFix(SETTINGS.fadingFix);
 
+#ifdef CROSSINK_INPUT_INJECTION
+  // Sequence any pending serial-injected tap (CMD:BTN:*) into a real press/
+  // release edge for this frame, BEFORE activities read input below.
+  mappedInputManager.advanceInjectedInput();
+#endif
+
   if (Serial && millis() - lastMemPrint >= 10000) {
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),
             ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     lastMemPrint = millis();
   }
 
-  if (UsbSerialFileTransfer::process(activityManager.isHomeActivity()) ==
-      UsbSerialFileTransfer::ProcessResult::ScreenshotRequested) {
+  const UsbSerialFileTransfer::ProcessResult serialResult =
+      UsbSerialFileTransfer::process(activityManager.isHomeActivity());
+  if (serialResult == UsbSerialFileTransfer::ProcessResult::ScreenshotRequested) {
     const uint32_t bufferSize = display.getBufferSize();
     logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
     uint8_t* buf = display.getFrameBuffer();
     logSerial.write(buf, bufferSize);
     logSerial.printf("SCREENSHOT_END\n");
+  } else if (serialResult == UsbSerialFileTransfer::ProcessResult::ButtonRequested) {
+#ifdef CROSSINK_INPUT_INJECTION
+    const int idx = UsbSerialFileTransfer::lastRequestedButton;
+    if (idx >= 0 && idx < static_cast<int>(MappedInputManager::BUTTON_COUNT)) {
+      const bool queued = mappedInputManager.queueInjectedTap(static_cast<MappedInputManager::Button>(idx));
+      logSerial.printf("BTN:%s:%d\n", queued ? "queued" : "full", idx);
+    }
+#else
+    logSerial.printf("BTN:unsupported\n");  // build lacks -DCROSSINK_RIG_INPUT
+#endif
   }
 
   // Check for any user activity (button press or release) or active background work

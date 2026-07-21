@@ -110,7 +110,7 @@ bool readMappedSideButtons(const HalGPIO& gpio, bool (HalGPIO::*fn)(uint8_t) con
   return (primary != kNoButton && (gpio.*fn)(primary)) || (secondary != kNoButton && (gpio.*fn)(secondary));
 }
 
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
 size_t buttonIndex(MappedInputManager::Button button) { return static_cast<size_t>(button); }
 #endif
 
@@ -167,7 +167,7 @@ bool MappedInputManager::shouldMirrorPowerAsConfirmHold() const {
 }
 
 bool MappedInputManager::wasPressed(const Button button) const {
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
   if (simulatorPressed[buttonIndex(button)]) {
     return true;
   }
@@ -188,7 +188,7 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
   if (simulatorReleased[buttonIndex(button)]) {
     return true;
   }
@@ -254,7 +254,7 @@ bool MappedInputManager::wasReleased(const Button button) const {
 }
 
 bool MappedInputManager::isPressed(const Button button) const {
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
   if (simulatorHeld[buttonIndex(button)]) {
     return true;
   }
@@ -278,7 +278,7 @@ bool MappedInputManager::isPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasAnyPressed() const {
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
   if (std::any_of(simulatorPressed.begin(), simulatorPressed.end(), [](bool pressed) { return pressed; })) {
     return true;
   }
@@ -287,7 +287,7 @@ bool MappedInputManager::wasAnyPressed() const {
 }
 
 bool MappedInputManager::wasAnyReleased() const {
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
   if (std::any_of(simulatorReleased.begin(), simulatorReleased.end(), [](bool released) { return released; })) {
     return true;
   }
@@ -297,7 +297,7 @@ bool MappedInputManager::wasAnyReleased() const {
 
 unsigned long MappedInputManager::getHeldTime() const {
   unsigned long heldTime = gpio.getHeldTime();
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
   const unsigned long now = millis();
   for (size_t i = 0; i < BUTTON_COUNT; i++) {
     if (simulatorHeld[i] && simulatorPressStart[i] > 0) {
@@ -371,7 +371,7 @@ int MappedInputManager::getReleasedFrontButton() const {
 
 bool MappedInputManager::isFrontButtonPressed(const uint8_t buttonIndex) const { return gpio.isPressed(buttonIndex); }
 
-#ifdef SIMULATOR
+#ifdef CROSSINK_INPUT_INJECTION
 void MappedInputManager::simulatorInjectPress(Button button) {
   const size_t idx = buttonIndex(button);
   simulatorPressed[idx] = true;
@@ -390,5 +390,48 @@ void MappedInputManager::simulatorInjectRelease(Button button) {
 void MappedInputManager::simulatorClearInputFrame() {
   simulatorPressed.fill(false);
   simulatorReleased.fill(false);
+}
+
+// --- Hardware-rig auto-sequenced tap queue ---------------------------------
+// The simulator smoke test drives press/release/clear itself each frame. The
+// serial rig has no such script, so we sequence one queued tap across three
+// loop iterations here so it produces a real press edge, then a release edge,
+// then a clean clear — exactly what the activity input handlers expect.
+bool MappedInputManager::queueInjectedTap(Button button) {
+  if (injectQueueCount >= INJECT_QUEUE_CAPACITY) {
+    return false;
+  }
+  const size_t tail = (injectQueueHead + injectQueueCount) % INJECT_QUEUE_CAPACITY;
+  injectQueue[tail] = button;
+  ++injectQueueCount;
+  return true;
+}
+
+void MappedInputManager::advanceInjectedInput() {
+  switch (injectPhase) {
+    case 1:
+      // Previous frame's press edge has been consumed; emit the release edge.
+      simulatorClearInputFrame();
+      simulatorInjectRelease(injectActive);
+      injectPhase = 2;
+      return;
+    case 2:
+      // Release edge consumed; clear so nothing lingers into the next frame.
+      simulatorClearInputFrame();
+      injectPhase = 0;
+      return;
+    default:
+      break;
+  }
+
+  if (injectQueueCount == 0) {
+    return;
+  }
+  injectActive = injectQueue[injectQueueHead];
+  injectQueueHead = (injectQueueHead + 1) % INJECT_QUEUE_CAPACITY;
+  --injectQueueCount;
+  simulatorClearInputFrame();
+  simulatorInjectPress(injectActive);
+  injectPhase = 1;
 }
 #endif
