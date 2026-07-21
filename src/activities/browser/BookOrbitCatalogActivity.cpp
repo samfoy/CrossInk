@@ -447,7 +447,9 @@ void BookOrbitCatalogActivity::markCurrentBookFinished() {
   statusMessage = tr(STR_LOADING);
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) requestUpdate(true);
 
-  const auto e = KOReaderCatalogClient::setReadStatus(detail.id, "finished");
+  // Server's settable enum is want_to_read|reading|on_hold|read|abandoned —
+  // "finished" is a FILTER-only value and 400s on PUT (verified live 2026-07-21).
+  const auto e = KOReaderCatalogClient::setReadStatus(detail.id, "read");
   if (e == KOReaderCatalogClient::OK) {
     detail.readStatus = "read";
   }
