@@ -105,9 +105,26 @@ device's clippings; sync twice → no duplicates either direction.
 
 ---
 
+## ⚠️ Open bugs (found 2026-07-21, not yet fixed)
+- **Read-status enum mismatch (Mark Finished likely 400s).** `markCurrentBookFinished()`
+  sends `setReadStatus(id, "finished")`, but the server's settable enum
+  (`KOREADER_CATALOG_SETTABLE_READ_STATUSES`) is
+  `want_to_read | reading | on_hold | read | abandoned` — **"finished" is only a
+  *filter* value, NOT settable.** Correct value is **`"read"`**. Verify with a curl
+  PUT to `/books/:id/read-status` before/after fixing.
+- **Download failure reported by Sam (2026-07-21, "issues downloading a book earlier
+  today") — NOT YET REPRODUCED.** Suspect: book **122 is a 457 MB PDF** (file_id 131);
+  large PDFs are a prime OOM/SD-write failure on the ~50 KB-heap C3. Repro plan:
+  server-side curl of the catalog `files/:fileId/download` first (localize device vs
+  server per skill), then on-hardware via the rig (flash + `monitor_serial(grep=
+  "BOCAT,MEM,ERS,panic")` while driving the download with `press_button`). Which book
+  actually failed is still unconfirmed — ask Sam.
+
 ## Tier 2 — Sync write-back (small, high-value)
 - **2.1** Mark **Reading** / **Abandoned** on detail (API accepts all three; we
-  already have Mark Finished).
+  already have Mark Finished). ⚠️ Fix the `"finished"`→`"read"` enum bug above as
+  part of this. Settable: `want_to_read|reading|on_hold|read|abandoned`; rating is
+  `{rating: 0..5 | null}` (null clears) via `PUT /books/:id/rating`.
 - **2.2** Rating write-back (1–5 stars) — catalog rating endpoint.
 - **2.3** Auto-mark **reading** on first open of a catalog-downloaded book.
 

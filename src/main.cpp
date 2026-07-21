@@ -927,24 +927,24 @@ void loop() {
                      display.getDisplayWidth(), display.getDisplayHeight());
     logSerial.flush();
     const uint8_t* buf = display.getFrameBuffer();
-    // HWCDC::write() honors the load-bearing 1ms TX timeout (main.cpp:707): on a
-    // full CDC ring it returns a SHORT count rather than blocking. A single
-    // unchecked write(buf, 48000) therefore truncates whenever the host can't
-    // drain within 1ms — the cause of "SHORT FRAMEBUFFER" dumps. Since a
-    // screenshot is a rare, explicit operation (not the hot logging path), it's
-    // safe to let IT block: push the remainder in chunks, respect the return
-    // value, and yield when the ring is full so the host can catch up. Bounded
-    // by a deadline so a disconnected host can never wedge the main loop.
+    // The runtime TX timeout is a load-bearing 1ms (main.cpp:707) so hot-path
+    // logging NEVER blocks the main loop when no host is draining. But with a
+    // 1ms timeout each write() only pushes ~one USB packet before it gives up,
+    // throttling a 52KB dump to ~4KB/s and truncating under the deadline. A
+    // screenshot is a rare, explicit op, so raise the timeout FOR THE DUMP ONLY
+    // (host is actively reading) then restore the 1ms guarantee immediately.
+    logSerial.setTxTimeoutMs(1000);
     size_t sent = 0;
-    const unsigned long screenshotDeadline = millis() + 10000;
+    const unsigned long screenshotDeadline = millis() + 15000;
     while (sent < bufferSize && millis() < screenshotDeadline) {
       const size_t n = logSerial.write(buf + sent, bufferSize - sent);
       sent += n;
       if (n == 0) {
-        delay(2);  // ring full — let the host drain before retrying
+        delay(2);  // ring full and host not draining — brief yield, then retry
       }
     }
     logSerial.flush();
+    logSerial.setTxTimeoutMs(1);  // restore the load-bearing non-blocking timeout
     logSerial.printf("SCREENSHOT_END\n");
   } else if (serialResult == UsbSerialFileTransfer::ProcessResult::ButtonRequested) {
 #ifdef CROSSINK_INPUT_INJECTION
