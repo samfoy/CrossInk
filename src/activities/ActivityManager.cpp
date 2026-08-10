@@ -12,6 +12,7 @@
 #include "OpdsServerStore.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
+#include "browser/BookOrbitCatalogActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
@@ -211,6 +212,10 @@ void ActivityManager::goToFileBrowser(std::string path) {
 
 void ActivityManager::goToRecentBooks() {
   replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));
+}
+
+void ActivityManager::goToBookOrbitLibrary() {
+  replaceActivity(std::make_unique<BookOrbitCatalogActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToBrowser() {
