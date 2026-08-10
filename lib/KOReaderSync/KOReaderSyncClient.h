@@ -3,6 +3,8 @@
 #include <optional>
 #include <string>
 
+#include "KOReaderPageStatsStore.h"
+
 /**
  * Optional document metadata sent alongside progress sync requests.
  * Mirrors the metadata object added in KOReader PR #15306.
@@ -99,6 +101,29 @@ class KOReaderSyncClient {
    * @return OK on success, error code on failure
    */
   static Error updateProgress(const KOReaderProgress& progress);
+
+  /**
+   * Upload buffered page-turn events to a BookOrbit server's KOReader plugin
+   * page-stats endpoint (POST <base>/plugin/page-stats). The server clusters
+   * these raw events into timed reading sessions, which is what feeds the
+   * reading-streak / reading-time / pace / reading-DNA stats. Plain KOSync
+   * progress does NOT create sessions, so without this a device only moves the
+   * progress bar.
+   *
+   * Only supported by BookOrbit-style servers; the public sync.koreader.rocks
+   * has no such endpoint and returns 404 (mapped to NOT_FOUND so the caller can
+   * clear the buffer and stop retrying against an unsupported server).
+   *
+   * @param deviceModel  Human-readable device model (e.g. "CrossInk X4 Pro").
+   *                     Server cap: 100 chars.
+   * @param store        Buffer of pending events (must have a 32-char hash)
+   * @param deviceTime   Optional device-local wall clock "YYYY-MM-DD HH:MM:SS"
+   *                     (empty to omit). KOReader datetimes carry no timezone.
+   * @return OK on success (2xx), NOT_FOUND if the endpoint is unsupported,
+   *         error code otherwise
+   */
+  static Error uploadPageStats(const std::string& deviceModel, const KOReaderPageStatsStore& store,
+                               const std::string& deviceTime = "");
 
   /**
    * Get human-readable error message.
