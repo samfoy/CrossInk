@@ -32,3 +32,5 @@ lib/EpdFont/scripts/output/
 /sdkconfig.*
 sdkconfig.sticky
 flake.*
+sdkconfig.x4pro
+.autoloop/

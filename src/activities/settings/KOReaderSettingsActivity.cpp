@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 
+#include "CrossPointSettings.h"
 #include "KOReaderAuthActivity.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
@@ -15,9 +16,18 @@
 namespace fui = freeink::ui;
 
 namespace {
+// MENU_ITEMS lives in the header (the beta's UiListActivity migration sizes the
+// fixed-capacity rowItems_/rowValues_ arrays from it), so the row count is bumped
+// there rather than redeclared here.
 const StrId menuNames[KOReaderSettingsActivity::MENU_ITEMS] = {
-    StrId::STR_USERNAME,      StrId::STR_PASSWORD,      StrId::STR_SYNC_SERVER_URL, StrId::STR_DOCUMENT_MATCHING,
-    StrId::STR_SEND_METADATA, StrId::STR_SYNC_BEHAVIOR, StrId::STR_SIGN_UP,         StrId::STR_AUTHENTICATE};
+    StrId::STR_USERNAME,          StrId::STR_PASSWORD,      StrId::STR_SYNC_SERVER_URL,
+    StrId::STR_DOCUMENT_MATCHING, StrId::STR_SEND_METADATA, StrId::STR_SYNC_BEHAVIOR,
+    StrId::STR_UPLOAD_READING_STATS, StrId::STR_SIGN_UP,    StrId::STR_AUTHENTICATE};
+// Row indices. Named because the activateIndex() and buildScreen() row chains
+// below must agree; an off-by-one here silently mislabels or misroutes a row.
+constexpr int ROW_UPLOAD_READING_STATS = 6;
+constexpr int ROW_SIGN_UP = 7;
+constexpr int ROW_AUTHENTICATE = 8;
 }  // namespace
 
 KOReaderSettingsActivity::KOReaderSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -97,7 +107,14 @@ void KOReaderSettingsActivity::activateIndex(const int index) {
     KOREADER_STORE.setSyncBehavior(newBehavior);
     KOREADER_STORE.saveToFile();
     requestUpdate();
-  } else if (index == 6) {
+  } else if (index == ROW_UPLOAD_READING_STATS) {
+    // Upload Reading Stats (BookOrbit page-stats) - toggle on/off.
+    // Lives in CrossPointSettings (not KOREADER_STORE) because it is also
+    // exposed in the web settings UI via SettingsList.h.
+    SETTINGS.uploadReadingStats = SETTINGS.uploadReadingStats ? 0 : 1;
+    SETTINGS.saveToFile();
+    requestUpdate();
+  } else if (index == ROW_SIGN_UP) {
     // Sign Up - create a new account on the sync server with the entered credentials
     if (!KOREADER_STORE.hasCredentials()) {
       return;
@@ -105,7 +122,7 @@ void KOReaderSettingsActivity::activateIndex(const int index) {
     startActivityForResult(
         std::make_unique<KOReaderAuthActivity>(renderer, mappedInput, KOReaderAuthActivity::Mode::SIGN_UP),
         [](const ActivityResult&) {});
-  } else if (index == 7) {
+  } else if (index == ROW_AUTHENTICATE) {
     // Authenticate
     if (!KOREADER_STORE.hasCredentials()) {
       // Can't authenticate without credentials - just show message briefly
@@ -151,6 +168,8 @@ void KOReaderSettingsActivity::buildScreen(UiScreen& screen) {
     } else if (i == 5) {
       rowValues_[i] =
           KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART ? tr(STR_SMART_SYNC) : tr(STR_ASK_EVERY_TIME);
+    } else if (i == ROW_UPLOAD_READING_STATS) {
+      rowValues_[i] = SETTINGS.shouldUploadReadingStats() ? tr(STR_ENABLED) : tr(STR_DISABLED);
     } else {
       rowValues_[i] = KOREADER_STORE.hasCredentials() ? "" : std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
     }

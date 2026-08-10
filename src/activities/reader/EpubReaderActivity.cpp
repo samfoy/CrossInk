@@ -5,8 +5,10 @@
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <KOReaderDocumentId.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <esp_system.h>
@@ -220,6 +222,19 @@ void EpubReaderActivity::onEnter() {
 
 void EpubReaderActivity::onExit() {
   Activity::onExit();
+
+  // Flush buffered BookOrbit page-stat events to SD. This is the ONLY flush
+  // point: capture keeps events in RAM so a page turn never costs an SD write
+  // (AGENTS.md: debounce persistent writes). Leaving the reader is also exactly
+  // what precedes a KOReader sync, which loads this file to upload from.
+  if (pageStatsDirty) {
+    if (pageStatsStore.save()) {
+      LOG_INF("KOStats", "flushed %u events to SD", static_cast<unsigned>(pageStatsStore.size()));
+    } else {
+      LOG_ERR("KOStats", "failed to flush page-stat events");
+    }
+    pageStatsDirty = false;
+  }
 
   // The extractor holds a raw pointer to this activity's epub; drop it before
   // the activity (and the shared_ptr) goes away.
@@ -1150,6 +1165,10 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (isForwardTurn) {
+    // Capture the BookOrbit page-stat event for the page we are LEAVING, before
+    // the currentPage/spine mutation below changes what "this page" means.
+    // Chapter-exit turns are recorded correctly because of this ordering.
+    capturePageStatEvent();
     // Advance within the section while there are (or may still be) more pages: either a built
     // page ahead, or the section is still building (windowed), in which case more pages exist
     // beyond the current watermark and render()'s ensure-built pump will lay them out. Only when
@@ -1182,6 +1201,91 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   }
   lastPageTurnTime = millis();
   requestUpdate();
+}
+
+namespace {
+// Convert a UTC calendar date/time to Unix epoch seconds without relying on the
+// system clock being configured (the RTC keeps UTC wall-clock fields only).
+// Howard Hinnant's days-from-civil algorithm. Returns 0 for an obviously-unset
+// clock (year < 2020) so callers can skip the event rather than upload garbage
+// timestamps the server would cluster into nonsense sessions.
+uint32_t utcEpochFromCivil(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute, uint8_t second) {
+  if (year < 2020 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return 0;
+  }
+  int y = static_cast<int>(year);
+  const unsigned m = month;
+  const unsigned d = day;
+  y -= (m <= 2);
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1u;
+  const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+  const long days = static_cast<long>(era) * 146097L + static_cast<long>(doe) - 719468L;
+  const long long secs = static_cast<long long>(days) * 86400LL + hour * 3600LL + minute * 60LL + second;
+  if (secs <= 0) return 0;
+  return static_cast<uint32_t>(secs);
+}
+
+// A page must be on screen at least this long to count as "read". Fast flips
+// while seeking are not reading and would pollute the pace/session stats.
+constexpr unsigned long MIN_PAGE_STAT_DWELL_MS = 2000UL;
+}  // namespace
+
+void EpubReaderActivity::capturePageStatEvent() {
+  // Opt-in only: with the toggle off we buffer nothing and touch no SD, so
+  // plain-kosync users pay zero cost for this feature.
+  if (!SETTINGS.shouldUploadReadingStats()) return;
+  if (!epub || !section) return;
+  // lastRenderCompleteMs is stamped when the current page finished rendering, so
+  // it doubles as this page's "shown at" mark. 0 = nothing rendered yet.
+  if (lastRenderCompleteMs == 0UL) return;
+
+  const unsigned long elapsedMs = millis() - lastRenderCompleteMs;
+  if (elapsedMs < MIN_PAGE_STAT_DWELL_MS) return;
+  const uint32_t dwellSeconds = static_cast<uint32_t>(elapsedMs / 1000UL);
+  if (dwellSeconds == 0) return;
+
+  // Overall book progress (0..1) for the page just finished. pageCount can be a
+  // build watermark on a still-building section, but it is always >= currentPage,
+  // so the ratio stays in range.
+  const int totalPages = section->pageCount;
+  if (totalPages <= 0) return;
+  const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(totalPages);
+  const float overall = epub->calculateProgress(currentSpineIndex, chapterProgress);
+
+  // Real UTC epoch for the START of this page read: now minus the dwell.
+  Rtc::DateTime dt;
+  if (!halClock.getDateTime(dt)) {
+    // No RTC / read failure -> no meaningful timestamp. KOSync still carries the
+    // progress percentage, so only the timed-session channel is skipped.
+    LOG_INF("KOStats", "capture skip: no RTC date");
+    return;
+  }
+  const uint32_t nowEpoch = utcEpochFromCivil(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+  if (nowEpoch == 0) {
+    LOG_INF("KOStats", "capture skip: RTC year %u looks unset", static_cast<unsigned>(dt.year));
+    return;
+  }
+  const uint32_t startEpoch = nowEpoch > dwellSeconds ? nowEpoch - dwellSeconds : nowEpoch;
+
+  // Lazily bind the buffer to this book's document hash on first event. The hash
+  // must match what the sync client sends, so it uses the same match method.
+  if (pageStatsStore.documentHash().empty()) {
+    const std::string hash = (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME)
+                                 ? KOReaderDocumentId::calculateFromFilename(epub->getPath())
+                                 : KOReaderDocumentId::calculate(epub->getPath());
+    if (hash.size() != 32) {
+      LOG_INF("KOStats", "capture skip: no 32-hex document hash");
+      return;
+    }
+    pageStatsStore.load(hash);
+  }
+
+  pageStatsStore.addEvent(startEpoch, dwellSeconds, overall);
+  pageStatsDirty = true;
+  LOG_INF("KOStats", "captured event: dwell=%us overall=%.3f buffered=%u", static_cast<unsigned>(dwellSeconds), overall,
+          static_cast<unsigned>(pageStatsStore.size()));
 }
 
 // TODO: Failure handling

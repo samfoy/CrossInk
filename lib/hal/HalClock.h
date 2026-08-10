@@ -27,6 +27,13 @@ class HalClock {
   // Returns false if RTC is not available.
   bool getTime(uint8_t& hour, uint8_t& minute) const;
 
+  // Full UTC wall-clock date/time straight off the RTC (uncached, unlike
+  // getTime()'s 10 s poll cache, because callers needing a date want the exact
+  // instant). Returns false if no RTC is present or the read fails.
+  // Needed by BookOrbit page-stats, which must timestamp each page-read event
+  // with a real UTC epoch — hour/minute alone cannot produce one.
+  bool getDateTime(Rtc::DateTime& out) const;
+
   // Format time into a caller-provided buffer.
   // 24h mode produces "HH:MM" (needs >=6 bytes); 12h mode produces "H:MM AM"/"HH:MM PM" (needs >=9 bytes).
   // utcOffsetQuarterHoursBiased: biased quarter-hour offset (48 = UTC+0, 0 = UTC-12, 104 = UTC+14).
