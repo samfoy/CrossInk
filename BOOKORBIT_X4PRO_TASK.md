@@ -1,5 +1,33 @@
 # Task: Port BookOrbit integration to the Xteink X4 Pro (ESP32-S3) + add SmartScopes/TBR queue
 
+### ⚠️ CORRECTIONS (2026-08-10, authoritative — these OVERRIDE anything below that conflicts)
+
+Two errors in the original brief were found by the planner and independently verified. Both stand corrected:
+
+**CORRECTION 1 — X4 Pro has NO Back/Confirm/Left/Right buttons.** The SDK board profile
+(`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h`, `XTEINK_X4_PRO`) reads:
+`{back, confirm, left, right, up, down, power} = {UNASSIGNED, UNASSIGNED, UNASSIGNED, UNASSIGNED, 0, 7, 3}`
+— only **two physical nav keys (up=GPIO0, down=GPIO7) plus power**. Back/Confirm come from the
+**GT911 touch panel + capacitive Home key**. Any instruction below to "navigate with Up/Down/Confirm"
+or to reuse the C3 `ButtonNavigator` idiom was written for the X3's 6 buttons and is **WRONG for this
+device**. Build the catalog UI on upstream's **FreeInkUI touch idiom**, modeled on
+`src/activities/browser/OpdsBookBrowserActivity.{h,cpp}`. ⚠️ `ButtonNavigator` still exists upstream
+and still COMPILES, so a naive port passes the build and the acceptance gate while being **unusable on
+the device** — touch wiring is a correctness requirement, not polish. Keeping up/down as a secondary
+input path is welcome; touch must be primary and complete.
+
+**CORRECTION 2 — annotations are DEFERRED (Sam's explicit decision).** The instruction below to
+"re-add `ClippingStore::readForBook`" was wrong: upstream `feat-touch-ui` has **no**
+`ClippingStore`, `ClippingsManager`, or `ClipTextBuilder` at all. Highlights are a **CrossInk-only**
+feature (~900+ lines) that crosspoint never had, so annotation sync would require importing an entire
+absent subsystem against the ~1 MB flash ceiling — and porting only the client methods would ship
+permanently-dead code (empty store → every upload early-returns) that still costs flash.
+**Do NOT port** `uploadAnnotations` / `exchangeAnnotations` / `ackAnnotations` /
+`downloadAnnotations` / `ClippingStore`. Record the disposition in `progress.md`.
+
+**Confirmed deliverables:** page-stats sync, dashboard (degraded per Feature 2), catalog browser,
+search, SmartScopes/TBR queue, mark-finished.
+
 ## Mission
 
 Bring Sam's complete BookOrbit integration to the **Xteink X4 Pro** (ESP32-S3), and add the
