@@ -5,6 +5,7 @@
 #include <SecureHttpClient.h>
 #include <base64.h>
 
+#include <algorithm>
 #include <string>
 
 #include "KOReaderCredentialStore.h"
@@ -15,6 +16,17 @@ namespace {
 // Device identifier for CrossPoint reader
 constexpr char DEVICE_NAME[] = "CrossPoint";
 constexpr char DEVICE_ID[] = "crosspoint-reader";
+
+// Page-stats identity. Both are hard server-validated:
+//   deviceId      ^[A-Za-z0-9-]{1,100}$
+//   pluginVersion <= 20 chars
+// pluginVersion MUST be a fixed short constant, never derived from the firmware
+// version string: branch builds carry a long version (e.g.
+// "1.5.0-dev+feat-bookorbit-x4pro") which overflows the 20-char cap and 400s the
+// whole batch (hardware-confirmed on the C3). A dedicated deviceId keeps X4 Pro
+// reading sessions attributable separately from the X3's.
+constexpr char PAGESTATS_DEVICE_ID[] = "crossink-x4pro";
+constexpr char PAGESTATS_PLUGIN_VERSION[] = "crossink-ps-1";
 
 // KOSync's TLS-1.3 servers can't be reached through the precompiled system
 // mbedTLS (TLS 1.3 is stubbed out), so requests run over wolfSSL via
@@ -67,6 +79,33 @@ bool insufficientHeap() {
     return true;
   }
   return false;
+}
+
+// Performs a JSON POST to `url` with `body`, reusing the same auth + TLS setup
+// as the other calls. Returns the HTTP status code (>0) or a negative transport
+// error. Shared by the plugin uploads so a chunk loop doesn't duplicate the
+// transport plumbing.
+int doJsonPost(const std::string& url, const std::string& body) {
+  freeink::SecureHttpClient http;
+  http.setInsecure();
+  if (!http.begin(url)) {
+    LOG_ERR("KOSync", "Bad URL: %s", url.c_str());
+    return -1;
+  }
+  applyAuthHeaders(http);
+  http.addHeader("Content-Type", "application/json");
+  // Bound the request: on a weak/keep-alive TLS socket the POST-body write can
+  // STALL for minutes (observed on the C3: a 4.8 KB page-stats chunk hung ~153s
+  // until the proxy 504'd; the request reached the server but the body never
+  // fully arrived). A ~20s cap aborts a stall so the caller can retry, and
+  // setReuse(false) forces a fresh connection per POST so a half-wedged
+  // keep-alive socket can't poison the next chunk. The server accepts a 30-event
+  // chunk in well under a second, so 20s is ample.
+  http.setTimeout(20000);
+  http.setReuse(false);
+  const int httpCode = http.sendRequest("POST", body);
+  http.end();
+  return httpCode;
 }
 }  // namespace
 
@@ -272,6 +311,81 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   if (httpCode == 200 || httpCode == 202) return OK;
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
+}
+
+KOReaderSyncClient::Error KOReaderSyncClient::uploadPageStats(const std::string& deviceModel,
+                                                              const KOReaderPageStatsStore& store,
+                                                              const std::string& deviceTime) {
+  lastHttpCode = 0;
+  if (!KOREADER_STORE.hasCredentials()) {
+    LOG_DBG("KOStats", "No credentials configured");
+    return NO_CREDENTIALS;
+  }
+  if (store.empty() || store.documentHash().size() != 32) {
+    return OK;  // nothing to upload
+  }
+  if (insufficientHeap()) return LOW_MEMORY;
+
+  const std::string url = KOREADER_STORE.getBaseUrl() + "/plugin/page-stats";
+  const auto& events = store.events();
+
+  // Chunk events to keep each JSON body small on the wire — a large body over a
+  // weak keep-alive TLS socket can stall the write for minutes (see doJsonPost).
+  // 30 events is ~2.5 KB, which the server accepts in well under a second. The
+  // server clusters events across requests by (deviceId,bookFileId,startTime),
+  // so splitting a session across chunks is safe and idempotent.
+  constexpr size_t CHUNK = 30;
+  for (size_t start = 0; start < events.size(); start += CHUNK) {
+    const size_t end = std::min(start + CHUNK, events.size());
+
+    JsonDocument doc;
+    doc["deviceId"] = PAGESTATS_DEVICE_ID;
+    doc["deviceModel"] = deviceModel;
+    doc["pluginVersion"] = PAGESTATS_PLUGIN_VERSION;
+    if (!deviceTime.empty()) {
+      doc["deviceTime"] = deviceTime;
+    }
+    // ArduinoJson v7: assigning a default-constructed JsonArray/JsonObject
+    // serializes as null (detached), which the server rejects. to<>() is required
+    // to materialize a real member.
+    JsonArray books = doc["books"].to<JsonArray>();
+    JsonObject book = books.add<JsonObject>();
+    book["hash"] = store.documentHash();
+    JsonArray evs = book["events"].to<JsonArray>();
+    for (size_t i = start; i < end; ++i) {
+      const KOReaderPageStatEvent& e = events[i];
+      JsonObject ev = evs.add<JsonObject>();
+      ev["page"] = e.progressBp;                                  // basis points (0..10000)
+      ev["startTime"] = e.startTime;                              // unix epoch seconds
+      ev["durationSeconds"] = e.durationSeconds;                  // dwell time
+      ev["totalPages"] = KOReaderPageStatsStore::PROGRESS_SCALE;  // fixed denominator
+    }
+
+    std::string body;
+    serializeJson(doc, body);
+
+    LOG_DBG("KOStats", "Uploading page-stats chunk %u-%u (%u bytes, heap %u)", (unsigned)start, (unsigned)end,
+            (unsigned)body.length(), (unsigned)ESP.getFreeHeap());
+    const int httpCode = doJsonPost(url, body);
+    lastHttpCode = httpCode;
+
+    if (httpCode == 200 || httpCode == 201 || httpCode == 202 || httpCode == 204) {
+      continue;  // chunk accepted
+    }
+    if (httpCode == 401) return AUTH_FAILED;
+    if (httpCode == 404 || httpCode == 405 || httpCode == 501) {
+      // Server doesn't implement/allow this endpoint (plain kosync). The caller
+      // clears the buffer on NOT_FOUND so events can't accumulate forever and
+      // re-fire doomed POSTs on every sync.
+      LOG_INF("KOStats", "Server has no page-stats endpoint (HTTP %d)", httpCode);
+      return NOT_FOUND;
+    }
+    if (httpCode <= 0) return NETWORK_ERROR;
+    return SERVER_ERROR;
+  }
+
+  LOG_INF("KOStats", "Uploaded %u page-stat events for %s", (unsigned)events.size(), store.documentHash().c_str());
+  return OK;
 }
 
 const char* KOReaderSyncClient::errorString(Error error) {
