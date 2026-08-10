@@ -288,6 +288,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
                           {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                           "imageRendering", StrId::STR_CAT_READER),
+        // Opt-in BookOrbit page-stats upload. Registered here so it persists via
+        // JsonSettingsIO (which iterates getSettingsList()) and shows in the web
+        // settings UI; the on-device entry lives in KOReaderSettingsActivity.
+        SettingInfo::Toggle(StrId::STR_UPLOAD_READING_STATS, &CrossPointSettings::uploadReadingStats,
+                            "uploadReadingStats", StrId::STR_CAT_READER),
         // --- Controls ---
         SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
                           {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_DISABLED}, "sideButtonLayout",

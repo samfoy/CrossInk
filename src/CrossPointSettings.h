@@ -311,6 +311,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // Opt-in: upload per-page reading events to a BookOrbit KOReader plugin
+  // page-stats endpoint during KOReader sync. OFF by default because plain
+  // kosync servers (sync.koreader.rocks, kosync-dotnet) don't implement that
+  // endpoint; enabling it only makes sense when syncing to a BookOrbit server.
+  // When off, nothing is buffered and no SD writes happen (zero cost).
+  uint8_t uploadReadingStats = 0;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
@@ -325,6 +331,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint16_t getPowerButtonDuration() const {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 300;
   }
+
+  // Whether to buffer + upload page-stat events to a BookOrbit page-stats
+  // endpoint during KOReader sync. Opt-in (default off): plain kosync servers
+  // don't implement the endpoint, so buffering there would cost SD writes and
+  // battery for uploads that can never land.
+  bool shouldUploadReadingStats() const { return uploadReadingStats != 0; }
+
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader
