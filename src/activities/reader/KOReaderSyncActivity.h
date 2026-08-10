@@ -83,6 +83,9 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
   void onWifiSelectionComplete(bool success);
   void performSync();
   void performUpload();
+  // Push any buffered BookOrbit page-stat events for this document. Opt-in and
+  // best-effort: never fails the sync. Must be called while WiFi is still up.
+  void uploadPageStats();
   bool smartSyncEnabled() const;
   void markAutoReturn();
   void completeAlreadySynced();
