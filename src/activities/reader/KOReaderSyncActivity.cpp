@@ -14,8 +14,10 @@
 
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
+#include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
+#include "KOReaderPageStatsStore.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
 #include "SilentRestart.h"
@@ -29,6 +31,11 @@
 namespace fui = freeink::ui;
 
 namespace {
+// deviceModel sent with page-stats. MUST contain "CrossInk"/"Crosspoint": the
+// BookOrbit fork maps that substring to source='crosspoint' so these sessions
+// get their own Reading-Log badge instead of the generic 'koreader' one.
+// Server cap is 100 chars. "X4 Pro" distinguishes Pro sessions from the X3's.
+constexpr char PAGE_STATS_DEVICE_MODEL[] = "CrossInk X4 Pro";
 // One action id for both interactive states: the compare rows (SHOWING_RESULT)
 // and the upload button (NO_REMOTE_PROGRESS) never coexist, so state
 // disambiguates them in the handler.
@@ -110,6 +117,11 @@ void KOReaderSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
   // epub is guaranteed non-null here: ensureEpubLoaded() was called in performSync() before
   // SHOWING_RESULT state is entered, and this method is only called from that state.
   assert(epub);
+  // Reading happened regardless of which side wins the progress comparison, so
+  // the buffered sessions must be pushed on the Apply-Remote path too -- not
+  // just in performUpload(). WiFi is still up here (this path never stops the
+  // radio itself), so the POST can go out before returning to the reader.
+  uploadPageStats();
   std::optional<uint32_t> offset;
   if (remotePosition.hasVisibleTextOffset && remotePosition.spineIndex == spineIndex) {
     offset = remotePosition.visibleTextOffset;
@@ -127,6 +139,41 @@ void KOReaderSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
 }
 
 void KOReaderSyncActivity::returnToReader() { activityManager.goToReader(epubPath); }
+
+void KOReaderSyncActivity::uploadPageStats() {
+  // Opt-in only. With the toggle off nothing was ever captured, so there is
+  // also nothing to load or send.
+  if (!SETTINGS.shouldUploadReadingStats()) return;
+  if (documentHash.size() != 32) return;
+
+  KOReaderPageStatsStore store;
+  if (!store.load(documentHash) || store.empty()) {
+    // No buffer for this book (nothing qualified as read, or the reader never
+    // flushed). Not an error.
+    return;
+  }
+
+  const size_t pending = store.size();
+  const auto result = KOReaderSyncClient::uploadPageStats(PAGE_STATS_DEVICE_MODEL, store);
+  if (result == KOReaderSyncClient::OK) {
+    // Server accepted the batch. Clearing is safe because ingestion is
+    // idempotent server-side (it clusters by deviceId+book+startTime), so a
+    // retry could never double-count -- but keeping them would re-upload
+    // forever.
+    store.clear();
+    LOG_INF("KOStats", "uploaded %u events", static_cast<unsigned>(pending));
+  } else if (result == KOReaderSyncClient::NOT_FOUND) {
+    // Plain kosync server with no page-stats endpoint. Drop the buffer so it
+    // cannot grow to the 2000-event cap and re-fire doomed POSTs on every sync
+    // (battery + latency cost for an upload that can never land).
+    store.clear();
+    LOG_INF("KOStats", "endpoint absent; buffer cleared to avoid re-firing");
+  } else {
+    // Transient (network / auth / 5xx): keep the buffer and retry next sync.
+    LOG_ERR("KOStats", "upload failed (%s); keeping buffer for retry",
+            KOReaderSyncClient::errorString(result));
+  }
+}
 
 bool KOReaderSyncActivity::smartSyncEnabled() const {
   return KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART;
@@ -368,6 +415,11 @@ void KOReaderSyncActivity::performUpload() {
   epub.reset();
 
   const auto result = KOReaderSyncClient::updateProgress(progress);
+
+  // Push buffered reading sessions while the radio is still up. Progress sync
+  // only carries a percentage; this is the channel that creates BookOrbit's
+  // timed reading_sessions (streak / reading-time / pace / reading-DNA).
+  uploadPageStats();
 
   // Drop the radio while user reads the result; full teardown happens at silent reboot.
   esp_wifi_stop();
