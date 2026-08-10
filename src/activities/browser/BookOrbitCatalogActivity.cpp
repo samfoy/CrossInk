@@ -563,7 +563,15 @@ void BookOrbitCatalogActivity::onWifiSelectionComplete(const bool connected) {
 void BookOrbitCatalogActivity::loadDashboard() {
   view = View::LOADING;
   statusMessage = tr(STR_LOADING);
-  requestUpdateAndWait();
+  // NON-BLOCKING on purpose. This is reachable from onEnter(), which runs on the
+  // activity task inside ActivityManager::update() BEFORE that same loop reaches
+  // its render dispatch -- so requestUpdateAndWait() here waits forever for a
+  // render that cannot start yet, and the screen hangs on "Loading" with no way
+  // out. OPDS's browser has the same onEnter->network shape and likewise only
+  // ever calls the non-blocking requestUpdate(). The "render once synchronously
+  // before a transfer" rule still applies to the DOWNLOAD path, which is entered
+  // from loop() where blocking is safe.
+  requestUpdate();
 
   const auto err = KOReaderCatalogClient::fetchDashboard(dashboard, continueReadingCache);
   if (err != KOReaderCatalogClient::Error::OK) {
@@ -647,7 +655,11 @@ void BookOrbitCatalogActivity::selectBrowseMode(const BrowseMode mode) {
 void BookOrbitCatalogActivity::loadScopes() {
   view = View::LOADING;
   statusMessage = tr(STR_LOADING);
-  requestUpdateAndWait();
+  // Non-blocking: this function is reachable from activity-result handlers
+  // (WiFi selection, search keyboard) and from onEnter, both of which run on
+  // the activity task BEFORE the render dispatch -- a blocking wait there
+  // never returns. See loadDashboard() for the full explanation.
+  requestUpdate();
 
   const auto err = KOReaderCatalogClient::fetchSmartScopes(scopes);
   if (err != KOReaderCatalogClient::Error::OK) {
@@ -678,7 +690,11 @@ void BookOrbitCatalogActivity::loadQuery(const BookOrbitBooksQuery& query, const
   activeQuery.page = pageNumber;
   view = View::LOADING;
   statusMessage = tr(STR_LOADING);
-  requestUpdateAndWait();
+  // Non-blocking: this function is reachable from activity-result handlers
+  // (WiFi selection, search keyboard) and from onEnter, both of which run on
+  // the activity task BEFORE the render dispatch -- a blocking wait there
+  // never returns. See loadDashboard() for the full explanation.
+  requestUpdate();
 
   const auto err = KOReaderCatalogClient::fetchBooks(activeQuery, page);
   if (err != KOReaderCatalogClient::Error::OK) {
@@ -696,7 +712,11 @@ void BookOrbitCatalogActivity::openDetail(const int bookId) {
   returnView = View::LIST;
   view = View::LOADING;
   statusMessage = tr(STR_LOADING);
-  requestUpdateAndWait();
+  // Non-blocking: this function is reachable from activity-result handlers
+  // (WiFi selection, search keyboard) and from onEnter, both of which run on
+  // the activity task BEFORE the render dispatch -- a blocking wait there
+  // never returns. See loadDashboard() for the full explanation.
+  requestUpdate();
 
   const auto err = KOReaderCatalogClient::fetchDetail(bookId, detail);
   if (err != KOReaderCatalogClient::Error::OK) {
@@ -735,6 +755,9 @@ void BookOrbitCatalogActivity::downloadCurrentBook() {
   // Render the download screen ONCE, synchronously, and wait for it before the
   // transfer starts. No render may run concurrently with the transfer's
   // allocations; the progress callback only updates counters.
+  // SAFE to block here (unlike the other loaders): this is only ever reached from
+  // loop() via activateSelected(), which holds no RenderLock and runs after the
+  // render dispatch. Never call it from onEnter or an activity-result handler.
   requestUpdateAndWait();
 
   const auto err = KOReaderCatalogClient::downloadFile(
@@ -765,7 +788,11 @@ void BookOrbitCatalogActivity::markCurrentBookFinished() {
   if (detail.id == 0) return;
   view = View::LOADING;
   statusMessage = tr(STR_LOADING);
-  requestUpdateAndWait();
+  // Non-blocking: this function is reachable from activity-result handlers
+  // (WiFi selection, search keyboard) and from onEnter, both of which run on
+  // the activity task BEFORE the render dispatch -- a blocking wait there
+  // never returns. See loadDashboard() for the full explanation.
+  requestUpdate();
 
   // NOTE: "read", not the filter word "finished" -- the settable status enum and
   // the catalog filter vocabulary are different sets on the server.
