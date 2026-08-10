@@ -12,6 +12,11 @@ void HalClock::begin() {
   LOG_INF("CLK", _available ? "SDK RTC found" : "RTC not found");
 }
 
+bool HalClock::getDateTime(Rtc::DateTime& out) const {
+  if (!_available) return false;
+  return _sdkRtc.now(out);
+}
+
 bool HalClock::getTime(uint8_t& hour, uint8_t& minute) const {
   if (!_available) return false;
 

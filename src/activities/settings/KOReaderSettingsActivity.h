@@ -12,7 +12,9 @@ class KOReaderSettingsActivity final : public UiListActivity {
  public:
   explicit KOReaderSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
-  static constexpr int MENU_ITEMS = 8;
+  // 9 rows: username, password, server URL, document matching, send metadata,
+  // sync behavior, upload reading stats (BookOrbit page-stats), sign up, authenticate.
+  static constexpr int MENU_ITEMS = 9;
 
  private:
   int listCount() const override;

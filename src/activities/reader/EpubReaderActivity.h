@@ -3,6 +3,7 @@
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
+#include <KOReaderPageStatsStore.h>
 
 #include <atomic>
 #include <memory>
@@ -44,6 +45,11 @@ class EpubReaderActivity final : public ReaderActivity {
   int idlePrewarmSpine = -1;
   int idlePrewarmPage = -1;
   unsigned long lastRenderCompleteMs = 0;
+  // BookOrbit page-stats: per-document buffer of timed page-read events, flushed
+  // to SD in onExit() and uploaded during KOReader sync. `pageStatsDirty` avoids
+  // rewriting the file when nothing new was captured.
+  KOReaderPageStatsStore pageStatsStore;
+  bool pageStatsDirty = false;
   bool bookmarkRemoved = false;
   std::vector<BookmarkEntry> cachedBookmarks;
   bool recentsEntryRemoved = false;
@@ -92,6 +98,12 @@ class EpubReaderActivity final : public ReaderActivity {
   void openDictionaryWordSelect();
   bool launchKOReaderSync();
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
+  // Buffer one BookOrbit page-stat event for the page currently displayed.
+  // No-op unless SETTINGS.shouldUploadReadingStats() is on, the page was shown
+  // long enough to count as read, and the RTC has a usable date. Must be called
+  // BEFORE the page/spine mutation in pageTurn() so chapter-exit turns record
+  // the page being left.
+  void capturePageStatEvent();
   void loadCachedBookmarks();
   void addBookmark();
   void updateBookmarkFlag();
