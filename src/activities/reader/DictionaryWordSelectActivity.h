@@ -33,6 +33,7 @@ class DictionaryWordSelectActivity final : public Activity {
         initialY(initialY) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
@@ -58,6 +59,8 @@ class DictionaryWordSelectActivity final : public Activity {
   void performLookup();
   // Bridge-backed translation of the selected word (network; see TranslateClient).
   void performTranslate();
+  // Blocking half of performTranslate; also reached after the WiFi picker.
+  void runTranslateRequest();
   // Words sharing the selected word's rendered line, for disambiguation.
   std::string lineContext(int index) const;
   // Touch action bar contents, in bar order.
@@ -85,6 +88,12 @@ class DictionaryWordSelectActivity final : public Activity {
   Popup popup = Popup::None;
   StrId popupMsg = StrId::STR_DICT_NOT_FOUND;
   unsigned long popupTime = 0;
+
+  // Translate-over-WiFi state. WiFi is not up while reading, so a translate may
+  // have to raise it first and resume afterwards.
+  int pendingTranslateIndex = -1;          // word to translate once WiFi is up
+  bool requestTranslateAfterWifi = false;  // run the request from loop(), not a callback
+  bool wifiActivated = false;              // this screen turned the radio on; turn it off on exit
 
   // Differential highlight repaint: the pixels under the current highlight
   // box, so a cursor move restores them and repaints only the two affected

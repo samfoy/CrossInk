@@ -3,6 +3,7 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Memory.h>
+#include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -13,6 +14,7 @@
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
 #include "DictionaryWordGeometry.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "components/TouchActionBar.h"
 #include "components/UITheme.h"
 #include "network/TranslateClient.h"
@@ -186,6 +188,12 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
 // each of which is named on screen rather than collapsing into a generic error.
 // Reuses DictionaryDefinitionActivity for the result: it already scrolls, wraps
 // and exits correctly, and a translation is the same shape as a definition.
+//
+// WiFi is NOT kept up while reading (it drains the battery and the reader turns
+// it off), so a translate almost always starts disconnected. Rather than
+// reporting "Wi-Fi not connected" and making the reader go turn it on by hand,
+// this brings the radio up itself via WifiSelectionActivity, whose autoConnect
+// re-joins the last used network without any prompt when credentials are saved.
 void DictionaryWordSelectActivity::performTranslate() {
   if (words.empty()) return;
 
@@ -196,6 +204,42 @@ void DictionaryWordSelectActivity::performTranslate() {
     requestUpdate();
     return;
   }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    // Remember which word to translate: the sub-activity repaints over us, and
+    // the selection must survive the round trip.
+    pendingTranslateIndex = selected;
+    wifiActivated = true;
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+                           [this](const ActivityResult& result) {
+                             const int index = pendingTranslateIndex;
+                             pendingTranslateIndex = -1;
+                             if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+                               // The reader backed out of the picker, or the join
+                               // failed: say so plainly instead of silently doing
+                               // nothing.
+                               popup = Popup::Error;
+                               popupMsg = StrId::STR_TRANSLATE_NO_WIFI;
+                               popupTime = millis();
+                               requestUpdate();
+                               return;
+                             }
+                             if (index >= 0 && index < static_cast<int>(words.size())) {
+                               selected = index;
+                               requestTranslateAfterWifi = true;
+                             }
+                             requestUpdate();
+                           });
+    return;
+  }
+
+  runTranslateRequest();
+}
+
+// The blocking half of performTranslate, split out so it can be reached both
+// directly (WiFi already up) and from the WifiSelectionActivity result handler.
+void DictionaryWordSelectActivity::runTranslateRequest() {
+  if (words.empty() || selected < 0 || selected >= static_cast<int>(words.size())) return;
 
   popup = Popup::Busy;
   popupMsg = StrId::STR_TRANSLATING;
@@ -329,7 +373,27 @@ void DictionaryWordSelectActivity::performLookup() {
   requestUpdate();
 }
 
+void DictionaryWordSelectActivity::onExit() {
+  Activity::onExit();
+  // Leave the radio as we found it: this screen only raises WiFi for a
+  // translate, and reading with it up costs battery for nothing.
+  if (wifiActivated) {
+    WiFi.disconnect(false);
+    wifiActivated = false;
+  }
+}
+
 void DictionaryWordSelectActivity::loop() {
+  // Deferred translate after the WiFi picker returned connected. Run it from
+  // loop(), never from the result handler: runTranslateRequest blocks on the
+  // network and calls requestUpdateAndWait, which must not happen inside an
+  // activity-result callback.
+  if (requestTranslateAfterWifi) {
+    requestTranslateAfterWifi = false;
+    runTranslateRequest();
+    return;
+  }
+
   if (popup == Popup::NotFound || popup == Popup::Error) {
     if (millis() - popupTime >= POPUP_DURATION_MS) {
       popup = Popup::None;

@@ -24,12 +24,26 @@ inline int slotAt(const int width, const int count, const int x) {
   return -1;
 }
 
-// Top edge of the bar for a screen of `screenHeight` pixels.
-inline int barTop(const int screenHeight, const int barHeight) { return screenHeight - barHeight; }
+// Top edge of the bar for a screen of `screenHeight` pixels, lifted clear of any
+// bezel rows the panel's bottom edge is physically covered by.
+inline int barTop(const int screenHeight, const int barHeight, const int bottomInset = 0) {
+  return screenHeight - bottomInset - barHeight;
+}
 
-// True when `y` falls inside the bar band.
-inline bool inBar(const int screenHeight, const int barHeight, const int y) {
-  return y >= barTop(screenHeight, barHeight);
+// Bottom edge (exclusive) of the bar — the last drawable row above the bezel.
+inline int barBottom(const int screenHeight, const int bottomInset = 0) { return screenHeight - bottomInset; }
+
+// Text baseline that vertically centres a glyph box of `textHeight` in the bar.
+// The label was previously pinned at a fixed offset from the top, which left it
+// hugging the divider on a short bar and clipped on a tall font.
+inline int labelBaseline(const int barTopY, const int barHeight, const int textHeight) {
+  return barTopY + (barHeight + textHeight) / 2;
+}
+
+// True when `y` falls inside the bar band. Rows below the bar (under the bezel)
+// are NOT part of it: nothing is painted there, so nothing may be tapped there.
+inline bool inBar(const int screenHeight, const int barHeight, const int y, const int bottomInset = 0) {
+  return y >= barTop(screenHeight, barHeight, bottomInset) && y < barBottom(screenHeight, bottomInset);
 }
 
 }  // namespace TouchActionBarGeometry

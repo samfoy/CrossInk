@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <set>
 
 #include "src/components/TouchActionBarGeometry.h"
@@ -83,6 +84,9 @@ TEST(TouchActionBarGeometry, DegenerateCountsAreRefused) {
 
 // --- vertical band ----------------------------------------------------------
 
+// X4 Pro bezel covers the bottom 3 panel rows in portrait (ViewableInsets.bottom).
+constexpr int kBottomInset = 3;
+
 TEST(TouchActionBarGeometry, BarOccupiesTheBottomBand) {
   EXPECT_EQ(barTop(kScreenHeight, kBarHeight), 756);
   EXPECT_FALSE(inBar(kScreenHeight, kBarHeight, 755));
@@ -90,11 +94,45 @@ TEST(TouchActionBarGeometry, BarOccupiesTheBottomBand) {
   EXPECT_TRUE(inBar(kScreenHeight, kBarHeight, 799));
 }
 
+// The bug Sam hit: with no inset the bar ran to the last panel row, so its lower
+// edge (divider, label descenders) sat under the bezel and looked cut off. The
+// bar must be LIFTED by the inset, not merely clipped.
+TEST(TouchActionBarGeometry, BarIsLiftedClearOfTheBezel) {
+  const int top = barTop(kScreenHeight, kBarHeight, kBottomInset);
+  const int bottom = barBottom(kScreenHeight, kBottomInset);
+  EXPECT_EQ(top, 753) << "bar must start higher to clear the bezel";
+  EXPECT_EQ(bottom, 797) << "bar must end above the bezel rows";
+  EXPECT_EQ(bottom - top, kBarHeight) << "full height preserved, not clipped";
+  // The bezel rows themselves are outside the bar.
+  for (int y = bottom; y < kScreenHeight; y++) {
+    EXPECT_FALSE(inBar(kScreenHeight, kBarHeight, y, kBottomInset)) << "bezel row y=" << y << " must not be in the bar";
+  }
+  EXPECT_TRUE(inBar(kScreenHeight, kBarHeight, top, kBottomInset));
+  EXPECT_TRUE(inBar(kScreenHeight, kBarHeight, bottom - 1, kBottomInset));
+  EXPECT_FALSE(inBar(kScreenHeight, kBarHeight, top - 1, kBottomInset));
+}
+
+// Labels must sit inside the band with room for descenders at both ends, not
+// pinned at a fixed offset from the top.
+TEST(TouchActionBarGeometry, LabelBaselineIsCentredInTheBand) {
+  const int top = barTop(kScreenHeight, kBarHeight, kBottomInset);
+  const int bottom = barBottom(kScreenHeight, kBottomInset);
+  for (int textHeight : {10, 14, 18, 22}) {
+    const int baseline = labelBaseline(top, bottom - top, textHeight);
+    EXPECT_GE(baseline - textHeight, top) << "glyph top escapes the bar (textHeight=" << textHeight << ")";
+    EXPECT_LE(baseline, bottom) << "baseline past the bar's lower edge (textHeight=" << textHeight << ")";
+    // Centred: space above the glyph should match space below, within rounding.
+    const int above = (baseline - textHeight) - top;
+    const int below = bottom - baseline;
+    EXPECT_LE(std::abs(above - below), 1) << "not centred (textHeight=" << textHeight << ")";
+  }
+}
+
 // A press on the page above the bar must NOT be swallowed by it — that is what
 // keeps word selection working while the bar is on screen.
 TEST(TouchActionBarGeometry, PageAreaIsNotInTheBar) {
-  for (int y = 0; y < barTop(kScreenHeight, kBarHeight); y++) {
-    ASSERT_FALSE(inBar(kScreenHeight, kBarHeight, y)) << "y=" << y << " wrongly claimed by the bar";
+  for (int y = 0; y < barTop(kScreenHeight, kBarHeight, kBottomInset); y++) {
+    ASSERT_FALSE(inBar(kScreenHeight, kBarHeight, y, kBottomInset)) << "y=" << y << " wrongly claimed by the bar";
   }
 }
 
