@@ -4,9 +4,11 @@
 #include <I18n.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "activities/Activity.h"
+#include "components/TouchActionBar.h"
 #include "util/Dictionary.h"
 
 // Word selection over the current reader page: Left/Right step through words
@@ -57,6 +59,12 @@ class DictionaryWordSelectActivity final : public Activity {
   int nearestWord(int x, int y) const;
   void moveVertical(int direction);
   void performLookup();
+  // Bridge-backed translation of the selected word (network; see TranslateClient).
+  void performTranslate();
+  // Words sharing the selected word's rendered line, for disambiguation.
+  std::string lineContext(int index) const;
+  // Touch action bar contents, in bar order.
+  std::vector<TouchActionBar::Action> barActions() const;
   bool drawHighlightWithSnapshot();
   void drawHints() const;
 
