@@ -95,7 +95,10 @@ class EpubReaderActivity final : public ReaderActivity {
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   void openReaderMenu();
-  void openDictionaryWordSelect();
+  // touchX/touchY: contact point for the long-press-on-a-word entry, forwarded
+  // so the word under the finger starts selected. Negative (the default) starts
+  // the selection mid-page, for the menu and button entries.
+  void openDictionaryWordSelect(int touchX = -1, int touchY = -1);
   bool launchKOReaderSync();
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   // Buffer one BookOrbit page-stat event for the page currently displayed.
