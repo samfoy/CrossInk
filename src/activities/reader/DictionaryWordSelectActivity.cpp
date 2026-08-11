@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
+#include "DictionaryWordGeometry.h"
 #include "components/UITheme.h"
 
 namespace {
@@ -48,9 +49,22 @@ void DictionaryWordSelectActivity::onEnter() {
   // full-repaint path as the fallback.
   snapshot = makeUniqueNoThrow<uint8_t[]>(SNAPSHOT_CAPACITY);
   extractWords();
+  // Long-press entry: start on the word under the finger. wordAt's slop is
+  // finger-sized but still exact, so a press landing in a gutter or on
+  // punctuation falls back to the nearest word on the touched line rather than
+  // throwing the selection back to mid-page.
+  bool positioned = false;
+  if (!words.empty() && initialX >= 0 && initialY >= 0) {
+    int hit = wordAt(initialX, initialY);
+    if (hit < 0) hit = nearestWord(initialX, initialY);
+    if (hit >= 0) {
+      selected = hit;
+      positioned = true;
+    }
+  }
   // Start on the middle row's word nearest mid-screen instead of top-left:
   // any word on the page is then at most half a page of moves away.
-  if (!words.empty()) {
+  if (!positioned && !words.empty()) {
     const int initial = closestInRow(rowCount / 2, renderer.getScreenWidth() / 2);
     if (initial >= 0) selected = initial;
   }
@@ -120,6 +134,20 @@ int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
     }
   }
   return -1;
+}
+
+// Index of the word closest to a touch point that hit no word's box, biased to
+// the touched line: a press in the gutter, on punctuation or in the gap between
+// two words resolves to the word the user was most plausibly aiming at. Rows
+// within one line-height of the point are preferred (vertical distance wins),
+// ties broken by horizontal distance to the word's box.
+int DictionaryWordSelectActivity::nearestWord(const int x, const int y) const {
+  // Geometry lives in DictionaryWordGeometry so the host-side gtest suite
+  // exercises the same code that runs on device.
+  return DictionaryWordGeometry::nearestWordIndex(x, y, static_cast<int>(words.size()), lineHeight, [this](int i) {
+    const WordBox& word = words[i];
+    return DictionaryWordGeometry::WordSpan{word.x, word.y, word.width};
+  });
 }
 
 // Index of the word in `row` whose horizontal center is closest to centerX;

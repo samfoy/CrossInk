@@ -316,7 +316,7 @@ void EpubReaderActivity::showBuildPopup() {
   buildPopupPending = false;
 }
 
-void EpubReaderActivity::openDictionaryWordSelect() {
+void EpubReaderActivity::openDictionaryWordSelect(const int touchX, const int touchY) {
   if (SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
@@ -336,9 +336,10 @@ void EpubReaderActivity::openDictionaryWordSelect() {
 
   // A lookup ends back on the page no matter how it was opened (menu or
   // long-press): the user is mid-reading, not mid-menu.
-  startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
-                                                                        orientedMarginLeft, orientedMarginTop),
-                         [this](const ActivityResult&) { requestUpdate(); });
+  startActivityForResult(
+      std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page), orientedMarginLeft,
+                                                     orientedMarginTop, touchX, touchY),
+      [this](const ActivityResult&) { requestUpdate(); });
 }
 
 void EpubReaderActivity::loop() {
@@ -512,6 +513,27 @@ void EpubReaderActivity::loop() {
   if (showDictionaryMessage && (millis() - dictionaryMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showDictionaryMessage = false;
     requestUpdate();
+  }
+
+  // Long-press a word on the page to look it up. Checked BEFORE the menu-tap and
+  // page-turn handlers so the contact resolves as a lookup rather than a page
+  // turn: the SDK fires this once, mid-contact, while the finger is still down,
+  // and MappedInputManager::wasScreenLongPress suppresses the rest of the
+  // contact — so the finger lift can't also tap-turn the page behind the
+  // selection screen or tap a word in the screen this opens.
+  //
+  // Gated on touchReaderControls so a board with touch reading disabled keeps
+  // the reading surface fully inert (a stray brush must not open the
+  // dictionary), and on a configured dictionary so a long-press is a no-op
+  // rather than a "no dictionary" popup on every accidental hold.
+  if (SETTINGS.touchReaderControls && mappedInput.hasTouch() && SETTINGS.dictionaryName[0] != '\0' &&
+      !showDictionaryMessage) {
+    int lpX = 0;
+    int lpY = 0;
+    if (mappedInput.wasScreenLongPress(lpX, lpY)) {
+      openDictionaryWordSelect(lpX, lpY);
+      return;
+    }
   }
 
   // While the end screen suggestion menu is showing it owns Confirm/Back/navigation

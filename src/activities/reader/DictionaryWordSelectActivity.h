@@ -13,14 +13,22 @@
 // in reading order, Up/Down jump rows, Confirm looks the word up and opens
 // DictionaryDefinitionActivity, Back returns to the reader. On touch devices a
 // touch-down moves the highlight and a tap on a word looks it up directly.
+//
+// initialX/initialY: screen point to start the selection on, for the
+// long-press-on-a-word entry (the reader passes the contact point so the word
+// under the finger is already highlighted). Negative means "no preference" —
+// the selection starts mid-page as it does for the menu/button entries.
 class DictionaryWordSelectActivity final : public Activity {
  public:
   explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                        std::unique_ptr<Page> page, int marginLeft, int marginTop)
+                                        std::unique_ptr<Page> page, int marginLeft, int marginTop, int initialX = -1,
+                                        int initialY = -1)
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         page(std::move(page)),
         marginLeft(marginLeft),
-        marginTop(marginTop) {}
+        marginTop(marginTop),
+        initialX(initialX),
+        initialY(initialY) {}
 
   void onEnter() override;
   void loop() override;
@@ -43,6 +51,7 @@ class DictionaryWordSelectActivity final : public Activity {
   void extractWords();
   int closestInRow(uint16_t row, int centerX) const;
   int wordAt(int x, int y) const;
+  int nearestWord(int x, int y) const;
   void moveVertical(int direction);
   void performLookup();
   bool drawHighlightWithSnapshot();
@@ -51,6 +60,8 @@ class DictionaryWordSelectActivity final : public Activity {
   std::unique_ptr<Page> page;
   const int marginLeft;
   const int marginTop;
+  const int initialX;
+  const int initialY;
   int fontId = 0;
   int lineHeight = 0;
 

@@ -193,7 +193,10 @@ class EpubReaderActivity final : public Activity {
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   // Opens the reader menu for the current position (short-press Confirm)
   void openReaderMenu();
-  void openDictionaryWordSelect();
+  // touchX/touchY: contact point for the long-press-on-a-word entry, forwarded
+  // so the word under the finger starts selected. Negative (the default) starts
+  // the selection mid-page, for the menu and button entries.
+  void openDictionaryWordSelect(int touchX = -1, int touchY = -1);
   // Returns true if sync acted (launched, or surfaced a save error); false if it was a no-op
   // because no KOReader credentials are stored.
   bool launchKOReaderSync();
