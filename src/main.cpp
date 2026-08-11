@@ -37,6 +37,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
+#include "network/TranslateCredentialStore.h"
+#include "nvs.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -414,6 +416,10 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  // Translation bridge endpoint + token. Without this the store keeps its
+  // defaults and every translate reports "No translation server set", even
+  // though /.crosspoint/translate.json is sitting on the card.
+  TRANSLATE_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
