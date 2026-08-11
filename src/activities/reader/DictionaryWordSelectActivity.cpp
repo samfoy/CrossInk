@@ -13,7 +13,10 @@
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
 #include "DictionaryWordGeometry.h"
+#include "components/TouchActionBar.h"
 #include "components/UITheme.h"
+#include "network/TranslateClient.h"
+#include "network/TranslateCredentialStore.h"
 
 namespace {
 
@@ -178,6 +181,78 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
   }
 }
 
+// Translate the selected word via the marginalia bridge. Unlike performLookup
+// this needs the network, so it can fail in ways a dictionary lookup cannot —
+// each of which is named on screen rather than collapsing into a generic error.
+// Reuses DictionaryDefinitionActivity for the result: it already scrolls, wraps
+// and exits correctly, and a translation is the same shape as a definition.
+void DictionaryWordSelectActivity::performTranslate() {
+  if (words.empty()) return;
+
+  if (!TRANSLATE_STORE.isConfigured()) {
+    popup = Popup::Error;
+    popupMsg = StrId::STR_TRANSLATE_NOT_CONFIGURED;
+    popupTime = millis();
+    requestUpdate();
+    return;
+  }
+
+  popup = Popup::Busy;
+  popupMsg = StrId::STR_TRANSLATING;
+  requestUpdateAndWait();  // paint before blocking on the network
+
+  const std::string word = words[selected].text;
+  // Neighbouring words on the same line give the model enough to disambiguate a
+  // single word ("banco" -> bench vs bank) without sending the whole page.
+  const TranslateClient::Response resp = TranslateClient::translate(word, lineContext(selected));
+
+  if (resp.result == TranslateClient::Result::Ok) {
+    popup = Popup::None;
+    std::string heading = word;
+    startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(heading),
+                                                                          std::string(resp.translation)),
+                           [this](const ActivityResult&) { requestUpdate(); });
+    return;
+  }
+
+  popup = Popup::Error;
+  switch (resp.result) {
+    case TranslateClient::Result::NoWifi:
+      popupMsg = StrId::STR_TRANSLATE_NO_WIFI;
+      break;
+    case TranslateClient::Result::NotConfigured:
+      popupMsg = StrId::STR_TRANSLATE_NOT_CONFIGURED;
+      break;
+    case TranslateClient::Result::Unauthorized:
+      popupMsg = StrId::STR_TRANSLATE_UNAUTHORIZED;
+      break;
+    case TranslateClient::Result::TooLong:
+      popupMsg = StrId::STR_TRANSLATE_TOO_LONG;
+      break;
+    default:
+      popupMsg = StrId::STR_TRANSLATE_FAILED;
+      break;
+  }
+  popupTime = millis();
+  requestUpdate();
+}
+
+// Words on the same rendered line as `index`, joined — the surrounding sentence
+// as far as this page's layout knows it. Capped so a wide line can't push the
+// request over the bridge's selection limit.
+std::string DictionaryWordSelectActivity::lineContext(const int index) const {
+  if (index < 0 || index >= static_cast<int>(words.size())) return {};
+  const uint16_t row = words[index].row;
+  std::string out;
+  for (const WordBox& word : words) {
+    if (word.row != row) continue;
+    if (!out.empty()) out += ' ';
+    out += word.text;
+    if (out.size() > 400) break;
+  }
+  return out;
+}
+
 void DictionaryWordSelectActivity::performLookup() {
   popup = Popup::Busy;
   if (!dictOpenAttempted) {
@@ -274,13 +349,36 @@ void DictionaryWordSelectActivity::loop() {
     return;
   }
 
-  if (words.empty()) return;
+  if (words.empty() && !TouchActionBar::available(mappedInput)) return;
 
-  // Touch: a touch-down moves the highlight to the touched word (differential
-  // repaint), a tap on a word selects and looks it up in one go.
+  // Touch: the action bar owns taps inside its band, so it is checked first —
+  // otherwise a tap on "Close" would also land on whatever word sits above it.
   int tx = 0;
   int ty = 0;
+  if (TouchActionBar::available(mappedInput)) {
+    const int action = TouchActionBar::tapped(renderer, mappedInput, barActions());
+    if (action == 0) {
+      finish();
+      return;
+    }
+    if (action == 1) {
+      performLookup();
+      return;
+    }
+    if (action == 2) {
+      performTranslate();
+      return;
+    }
+  }
+
+  if (words.empty()) return;
+
+  // A touch-down moves the highlight to the touched word (differential
+  // repaint), a tap on a word selects and looks it up in one go.
   if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    // Ignore a press that starts on the action bar: the highlight must not jump
+    // to the word above the button the reader is aiming at.
+    if (TouchActionBar::contains(renderer, mappedInput, ty)) return;
     const int hit = wordAt(tx, ty);
     if (hit >= 0 && hit != selected) {
       selected = hit;
@@ -289,6 +387,7 @@ void DictionaryWordSelectActivity::loop() {
     return;
   }
   if (mappedInput.wasScreenTapped(tx, ty)) {
+    if (TouchActionBar::contains(renderer, mappedInput, ty)) return;
     const int hit = wordAt(tx, ty);
     if (hit >= 0) {
       selected = hit;
@@ -351,7 +450,25 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
 // up as the top layer even when a highlighted word's box falls under a
 // hint's screen area. No side-button hints: the full-bleed reader page has no
 // spare gutter for them, so a hint box there would hide text.
+// Actions for the touch action bar, in bar order. Kept in one place so draw and
+// hit-testing can never disagree about which slot is which.
+std::vector<TouchActionBar::Action> DictionaryWordSelectActivity::barActions() const {
+  const bool haveWord = !words.empty();
+  return {
+      {tr(STR_CLOSE), true},
+      {tr(STR_LOOKUP), haveWord},
+      {tr(STR_TRANSLATE), haveWord},
+  };
+}
+
 void DictionaryWordSelectActivity::drawHints() const {
+  // Touch boards get real on-screen controls: GUI.drawButtonHints() draws
+  // nothing when hasTouch(), and this board has neither a Back nor a Confirm
+  // button, so without this the screen has no visible way out at all.
+  if (TouchActionBar::available(mappedInput)) {
+    TouchActionBar::draw(renderer, mappedInput, barActions());
+    return;
+  }
   // No selectable word on this page: Confirm and navigation are all no-ops
   // (guarded by words.empty() in loop()/performLookup), so only Back does
   // anything and only Back is hinted.

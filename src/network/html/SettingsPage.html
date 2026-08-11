@@ -302,6 +302,7 @@
 
   <div id="wifi-container"></div>
   <div id="opds-container"></div>
+  <div id="translate-container"></div>
 
   <div class="card">
     <p style="text-align: center; color: #95a5a6; margin: 0;">
@@ -823,6 +824,69 @@
     }
   }
 
+  // --- Translation bridge (marginalia /translate) ---
+  // The token is never sent back by GET /api/translate, only a hasToken flag, so
+  // the field shows "(unchanged)" and an empty submit preserves the stored one —
+  // same contract as the OPDS password above.
+  let translateCfg = {baseUrl: '', targetLang: 'English', hasToken: false};
+
+  function renderTranslateSection() {
+    const container = document.getElementById('translate-container');
+    container.innerHTML = '<div class="card"><h2>Translation</h2>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Bridge URL</span>' +
+        '<span class="setting-control"><input type="text" id="xlate-url" placeholder="https://host/marginalia" value="' + escapeHtml(translateCfg.baseUrl || '') + '"></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Target Language</span>' +
+        '<span class="setting-control"><input type="text" id="xlate-lang" value="' + escapeHtml(translateCfg.targetLang || 'English') + '"></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Token</span>' +
+        '<span class="setting-control"><input type="password" id="xlate-token" placeholder="' + (translateCfg.hasToken ? '(unchanged)' : '') + '"></span>' +
+      '</div>' +
+      '<div class="opds-actions">' +
+        '<button class="btn-small btn-save-server" onclick="saveTranslateConfig()">Save</button>' +
+      '</div></div>';
+  }
+
+  async function loadTranslateConfig() {
+    try {
+      const resp = await fetch('/api/translate');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      translateCfg = await resp.json();
+      renderTranslateSection();
+    } catch (e) {
+      console.error('Translate config load error:', e);
+      const container = document.getElementById('translate-container');
+      container.innerHTML = '<div class="card"><h2>Translation</h2>' +
+        '<p style="color:var(--label-color);text-align:center;">Could not load translation settings</p></div>';
+    }
+  }
+
+  async function saveTranslateConfig() {
+    const payload = {
+      baseUrl: document.getElementById('xlate-url').value.trim(),
+      targetLang: document.getElementById('xlate-lang').value.trim()
+    };
+    // Only send the token when the user typed one, so a blank field preserves
+    // the stored secret rather than silently clearing it.
+    const token = document.getElementById('xlate-token').value;
+    if (token) payload.token = token;
+    try {
+      const resp = await fetch('/api/translate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      showMessage('Translation settings saved!', false);
+      await loadTranslateConfig();
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+
   // Sequential, not concurrent: the device's web server handles one client
   // connection at a time, and three simultaneous fetches on page load can
   // stall long enough inside a single response to trip the firmware watchdog.
@@ -830,6 +894,7 @@
     await loadSettings();
     await loadWifiNetworks();
     await loadOpdsServers();
+    await loadTranslateConfig();
   })();
 </script>
 </body>

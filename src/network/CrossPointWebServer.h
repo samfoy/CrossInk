@@ -134,6 +134,10 @@ class CrossPointWebServer {
   // OPDS server handlers
   void handleGetOpdsServers() const;
   void handlePostOpdsServer();
+  // Translation bridge (marginalia /translate): URL + target language + token.
+  // GET never returns the token itself, only whether one is stored.
+  void handleGetTranslateConfig() const;
+  void handlePostTranslateConfig();
   void handleDeleteOpdsServer();
 
   // Wi-Fi credential handlers

@@ -18,6 +18,7 @@
 #include "OpdsServerStore.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
+#include "TranslateCredentialStore.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
 #include "html/FilesPageHtml.generated.h"
@@ -178,6 +179,10 @@ void CrossPointWebServer::begin() {
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
   server->on("/api/opds", HTTP_POST, [this] { handlePostOpdsServer(); });
   server->on("/api/opds/delete", HTTP_POST, [this] { handleDeleteOpdsServer(); });
+
+  // Translation bridge settings (marginalia /translate)
+  server->on("/api/translate", HTTP_GET, [this] { handleGetTranslateConfig(); });
+  server->on("/api/translate", HTTP_POST, [this] { handlePostTranslateConfig(); });
 
   // Wi-Fi credential endpoints
   server->on("/api/wifi", HTTP_GET, [this] { handleGetWifiNetworks(); });
@@ -1374,6 +1379,47 @@ void CrossPointWebServer::handleGetOpdsServers() const {
   server->sendContent("]");
   server->sendContent("");
   LOG_DBG("WEB", "Served OPDS servers API (%zu servers)", servers.size());
+}
+
+void CrossPointWebServer::handleGetTranslateConfig() const {
+  JsonDocument doc;
+  doc["baseUrl"] = TRANSLATE_STORE.getBaseUrl();
+  doc["targetLang"] = TRANSLATE_STORE.getTargetLang();
+  // The token itself is never returned — only whether one is stored, so the UI
+  // can show "configured" without echoing the secret back over the network.
+  doc["hasToken"] = !TRANSLATE_STORE.getToken().empty();
+  String out;
+  serializeJson(doc, out);
+  server->send(200, "application/json", out);
+}
+
+void CrossPointWebServer::handlePostTranslateConfig() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing JSON body");
+    return;
+  }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, server->arg("plain"));
+  if (err) {
+    server->send(400, "text/plain", String("Invalid JSON: ") + err.c_str());
+    return;
+  }
+
+  TRANSLATE_STORE.setBaseUrl(doc["baseUrl"] | std::string(""));
+  if (doc["targetLang"].is<const char*>()) {
+    TRANSLATE_STORE.setTargetLang(doc["targetLang"] | std::string(""));
+  }
+  // An absent token field preserves the stored one (the UI omits it unless the
+  // user typed a new secret); an explicitly empty one clears it.
+  if (doc["token"].is<const char*>()) {
+    TRANSLATE_STORE.setToken(doc["token"] | std::string(""));
+  }
+  if (!TRANSLATE_STORE.saveToFile()) {
+    server->send(500, "text/plain", "Failed to save translation settings");
+    return;
+  }
+  LOG_DBG("WEB", "Translate config saved (url=%s)", TRANSLATE_STORE.getBaseUrl().c_str());
+  server->send(200, "text/plain", "Translation settings saved");
 }
 
 void CrossPointWebServer::handlePostOpdsServer() {
