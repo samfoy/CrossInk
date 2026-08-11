@@ -2,12 +2,15 @@
 
 #include <I18n.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
+#include "CrossPointSettings.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
 #include "components/TouchActionBarGeometry.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 
 /**
@@ -33,34 +36,52 @@ class TouchActionBar {
   // of this band (the reader's page margins already do).
   static constexpr int HEIGHT = 44;
 
+  // Same breathing room BaseTheme::drawStatusBar leaves under its text lane, so
+  // the bar does not sit flush against the progress bar.
+  static constexpr int STATUS_BAR_CLEARANCE = 4;
+
   static bool available(const MappedInputManager& input) { return input.hasTouch(); }
 
-  // Panel rows the bezel physically covers at the bottom, in the current
-  // orientation. The bar must sit ABOVE these or its lower edge — dividers,
-  // descenders, the label itself — disappears under the bezel.
-  static int bottomInset(const GfxRenderer& renderer) {
+  // Rows at the bottom of the panel the bar must stay clear of.
+  //
+  // Two things live down there and BOTH have to be cleared, which is why lifting
+  // by the bezel inset alone was not enough:
+  //  1. ViewableInsets.bottom — panel rows the bezel physically covers. The X4
+  //     Pro does not override the SDK default (3), which was tuned on the X4's
+  //     bezel, so this alone under-reports the Pro's overlap.
+  //  2. The reader's status bar / progress bar band, which the page itself is
+  //     inset by (see EpubReaderActivity::render's orientedMarginBottom) and
+  //     which BaseTheme::drawStatusBar draws into. A bar sitting on top of it
+  //     collides with the progress bar and page counter.
+  //
+  // Mirrors the reader's own reservation: max(screenMargin, statusBarHeight) on
+  // top of the viewable inset, plus the same 4px breathing room drawStatusBar
+  // leaves under its text lane.
+  static int bottomReserve(const GfxRenderer& renderer) {
     int top = 0;
     int right = 0;
     int bottom = 0;
     int left = 0;
     renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
-    return bottom;
+    const int statusBarHeight = UITheme::getStatusBarHeight();
+    const int band = std::max(static_cast<int>(SETTINGS.screenMargin), statusBarHeight);
+    return bottom + band + STATUS_BAR_CLEARANCE;
   }
 
   // Reserved height for layout: 0 when there is no touch, so non-touch boards
   // keep their full page area. Includes the bezel inset the bar is lifted by, so
   // a caller reserving this much always clears the whole bar.
   static int reservedHeight(const GfxRenderer& renderer, const MappedInputManager& input) {
-    return available(input) ? HEIGHT + bottomInset(renderer) : 0;
+    return available(input) ? HEIGHT + bottomReserve(renderer) : 0;
   }
 
   static void draw(const GfxRenderer& renderer, const MappedInputManager& input, const std::vector<Action>& actions) {
     if (!available(input) || actions.empty()) return;
 
     const int width = renderer.getScreenWidth();
-    const int inset = bottomInset(renderer);
-    const int top = TouchActionBarGeometry::barTop(renderer.getScreenHeight(), HEIGHT, inset);
-    const int bottom = TouchActionBarGeometry::barBottom(renderer.getScreenHeight(), inset);
+    const int reserve = bottomReserve(renderer);
+    const int top = TouchActionBarGeometry::barTop(renderer.getScreenHeight(), HEIGHT, reserve);
+    const int bottom = TouchActionBarGeometry::barBottom(renderer.getScreenHeight(), reserve);
     const int count = static_cast<int>(actions.size());
 
     // Clear the band first: on the reader's differential repaint path the page
@@ -99,8 +120,8 @@ class TouchActionBar {
     int x = 0;
     int y = 0;
     if (!input.wasScreenTapped(x, y)) return -1;
-    const int inset = bottomInset(renderer);
-    if (!TouchActionBarGeometry::inBar(renderer.getScreenHeight(), HEIGHT, y, inset)) return -1;
+    const int reserve = bottomReserve(renderer);
+    if (!TouchActionBarGeometry::inBar(renderer.getScreenHeight(), HEIGHT, y, reserve)) return -1;
     const int slot = TouchActionBarGeometry::slotAt(renderer.getScreenWidth(), static_cast<int>(actions.size()), x);
     if (slot < 0) return -1;
     return actions[slot].enabled ? slot : -1;
@@ -113,6 +134,6 @@ class TouchActionBar {
   // word.
   static bool contains(const GfxRenderer& renderer, const MappedInputManager& input, int y) {
     return available(input) &&
-           y >= TouchActionBarGeometry::barTop(renderer.getScreenHeight(), HEIGHT, bottomInset(renderer));
+           y >= TouchActionBarGeometry::barTop(renderer.getScreenHeight(), HEIGHT, bottomReserve(renderer));
   }
 };
