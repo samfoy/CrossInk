@@ -22,7 +22,6 @@ enum class HomeMenuItem {
   FILE_BROWSER,
   RECENTS,
   OPDS_BROWSER,
-  BOOKORBIT_LIBRARY,
   FILE_TRANSFER,
   SETTINGS_MENU
 };
@@ -94,7 +93,6 @@ class ActivityManager {
   void goToFileBrowser(std::string path = {});
   void goToRecentBooks();
   void goToBrowser();
-  void goToBookOrbitLibrary();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
