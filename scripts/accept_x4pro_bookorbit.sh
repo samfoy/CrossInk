@@ -47,17 +47,26 @@ else
   fail=1
 fi
 
-note "=== [4/5] SmartScope support actually linked into the ELF ==="
+note "=== [4/5] page-stats sync linked; catalog browser fully GONE ==="
 NM=$(find "$HOME/.platformio/packages" -name "xtensa-esp32s3-elf-nm" -type f 2>/dev/null | head -1)
 if [ -z "$NM" ]; then
   NM=$(find "$HOME/.platformio/packages" -name "xtensa-esp-elf-nm" -type f 2>/dev/null | head -1)
 fi
 if [ -n "$NM" ] && [ -f .pio/build/x4pro/firmware.elf ]; then
-  if "$NM" .pio/build/x4pro/firmware.elf 2>/dev/null | grep -qi "smartscope"; then
-    note "LINK: SmartScope symbols present"
+  # The BookOrbit catalog browser was removed (OPDS covers browsing); page-stats
+  # sync is independent and MUST still be linked. Assert both directions so a
+  # partial removal or an accidental resurrection both fail the gate.
+  if "$NM" .pio/build/x4pro/firmware.elf 2>/dev/null | grep -qiE 'uploadPageStats|capturePageStatEvent'; then
+    note "LINK: page-stats sync symbols present"
   else
-    note "LINK: no SmartScope symbols found in firmware.elf"
+    note "LINK: page-stats sync symbols MISSING from firmware.elf"
     fail=1
+  fi
+  if "$NM" .pio/build/x4pro/firmware.elf 2>/dev/null | grep -qiE 'smartscope|BookOrbitCatalogActivity|KOReaderCatalogClient'; then
+    note "LINK: catalog browser symbols STILL PRESENT (removal incomplete)"
+    fail=1
+  else
+    note "LINK: catalog browser symbols gone"
   fi
 else
   note "LINK: could not run nm (missing toolchain or elf)"
