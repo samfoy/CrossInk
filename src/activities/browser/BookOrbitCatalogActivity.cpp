@@ -23,6 +23,35 @@ namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
 constexpr fui::ActionId ACTION_CANCEL = 2;
 
+// Viewport math for this screen's hand-rolled list state (topIndex/visibleRows).
+//
+// These two helpers used to live in components/UiAppHelpers.h on the old base.
+// The X4 Pro beta removed them from that shared header because its own list
+// screens migrated to the SDK's freeink::ui::ListNav, which carries the same
+// math as members (ListNav::scrollBy / ListNav::follow). This screen still
+// keeps its own topIndex/visibleRows/selectorIndex, so the math is restored
+// here as file-local statics rather than by re-adding symbols to the beta's
+// shared header -- that keeps the beta's UiAppHelpers.h untouched and avoids a
+// recurring merge conflict on every future upstream sync.
+//
+// Scroll semantics (unchanged): swipes move the viewport (topIndex) without
+// touching the selection; button navigation moves the selection and pulls the
+// viewport along just enough to keep it visible.
+int scrollListBy(const int topIndex, const int delta, const int visibleRows, const int count) {
+  int maxTop = count - visibleRows;
+  if (maxTop < 0) maxTop = 0;
+  int next = topIndex + delta;
+  if (next > maxTop) next = maxTop;
+  if (next < 0) next = 0;
+  return next;
+}
+
+int followListSelection(const int selectedIndex, const int topIndex, const int visibleRows, const int count) {
+  return static_cast<int>(fui::listTopIndexFor(static_cast<int16_t>(selectedIndex), static_cast<uint16_t>(topIndex),
+                                               static_cast<uint16_t>(visibleRows > 0 ? visibleRows : 1),
+                                               static_cast<uint16_t>(count)));
+}
+
 // Rows on the DETAIL screen, in render order.
 constexpr int DETAIL_ROW_DOWNLOAD = 0;
 constexpr int DETAIL_ROW_MARK_FINISHED = 1;
