@@ -12,9 +12,9 @@
 #include <cassert>
 #include <cmath>
 
+#include "CrossPointSettings.h"
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
-#include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
 #include "KOReaderPageStatsStore.h"
@@ -168,8 +168,7 @@ void KOReaderSyncActivity::uploadPageStats() {
     LOG_INF("KOStats", "endpoint absent; buffer cleared to avoid re-firing");
   } else {
     // Transient (network / auth / 5xx): keep the buffer and retry next sync.
-    LOG_ERR("KOStats", "upload failed (%s); keeping buffer for retry",
-            KOReaderSyncClient::errorString(result));
+    LOG_ERR("KOStats", "upload failed (%s); keeping buffer for retry", KOReaderSyncClient::errorString(result));
   }
 }
 

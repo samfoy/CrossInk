@@ -20,9 +20,9 @@ namespace {
 // fixed-capacity rowItems_/rowValues_ arrays from it), so the row count is bumped
 // there rather than redeclared here.
 const StrId menuNames[KOReaderSettingsActivity::MENU_ITEMS] = {
-    StrId::STR_USERNAME,          StrId::STR_PASSWORD,      StrId::STR_SYNC_SERVER_URL,
-    StrId::STR_DOCUMENT_MATCHING, StrId::STR_SEND_METADATA, StrId::STR_SYNC_BEHAVIOR,
-    StrId::STR_UPLOAD_READING_STATS, StrId::STR_SIGN_UP,    StrId::STR_AUTHENTICATE};
+    StrId::STR_USERNAME,      StrId::STR_PASSWORD,      StrId::STR_SYNC_SERVER_URL,      StrId::STR_DOCUMENT_MATCHING,
+    StrId::STR_SEND_METADATA, StrId::STR_SYNC_BEHAVIOR, StrId::STR_UPLOAD_READING_STATS, StrId::STR_SIGN_UP,
+    StrId::STR_AUTHENTICATE};
 // Row indices. Named because the activateIndex() and buildScreen() row chains
 // below must agree; an off-by-one here silently mislabels or misroutes a row.
 constexpr int ROW_UPLOAD_READING_STATS = 6;

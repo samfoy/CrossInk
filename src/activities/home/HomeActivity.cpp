@@ -15,8 +15,8 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "MappedInputManager.h"
 #include "KOReaderCredentialStore.h"
+#include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
